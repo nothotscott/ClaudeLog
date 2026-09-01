@@ -50,6 +50,9 @@ internal static class Program
             var window = new Views.MainWindow();
             var dialog = new Views.TextPrompt();
 
+            // The leading "ok" is what CI matches on — reaching this line at all means every
+            // window constructed. The rest of the sentence is for a human reading the log and can
+            // be reworded; the sentinel and the type names cannot.
             Console.WriteLine($"ok  platform started, {window.GetType().Name} " +
                               $"({window.Width:0}x{window.Height:0}) and {dialog.GetType().Name} loaded");
             return 0;

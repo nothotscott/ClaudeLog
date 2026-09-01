@@ -234,7 +234,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             SessionSubtitle = key;
 
             ReloadPrompts();
+            // Shortcuts first: the project node in it is what names the project whose session
+            // directory the terminal is resolved against.
             BuildShortcuts(node);
+            RestoreTerminal();
             SelectPromptAt(Prompts.Count - 1);
         }
         catch (Exception ex)
@@ -393,11 +396,313 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         }
     }
 
+    // ----------------------------------------------------------- terminal
+
+    /// <summary>
+    /// The Claude Code session this file's prompts go to. Null until one has been started, and
+    /// re-resolved on every load, because the terminal can be closed from under the app.
+    /// </summary>
+    private TerminalSession? _terminal;
+
+    [ObservableProperty] private bool _terminalRunning;
+    [ObservableProperty] private string _terminalLabel = "No terminal";
+    [ObservableProperty] private string _terminalTooltip = "Start Claude Code for this session";
+    [ObservableProperty] private bool _terminalBusy;
+
+    /// <summary>
+    /// The directory this session's Claude Code runs in: what the file already used if it has run
+    /// before, otherwise the project's configured default. Sticking to the stored one matters —
+    /// it is half the path to the transcript, so changing a project's default must not orphan the
+    /// sessions started under the old one.
+    /// </summary>
+    private string SessionDir
+    {
+        get
+        {
+            if (CurrentKey is null) return "";
+            var stored = _store.ForFile(CurrentKey).SessionDir;
+            if (stored is { Length: > 0 }) return stored;
+
+            var project = Shortcuts.FirstOrDefault(s => s.Kind == NodeKind.Project)?.Name;
+            return project is null ? "" : _settings.SessionDirFor(project);
+        }
+    }
+
+    /// <summary>
+    /// Picks up a terminal this file already has: one started earlier in this run, or one that
+    /// outlived a restart of the app and is still holding its PID file.
+    /// </summary>
+    private void RestoreTerminal()
+    {
+        _terminal = null;
+
+        if (CurrentKey is not null)
+        {
+            var file = _store.ForFile(CurrentKey);
+            if (file.ClaudeSessionId is { Length: > 0 } id && file.SessionDir is { Length: > 0 } dir)
+            {
+                var pid = ClaudeTerminal.Reattach(id, file.TerminalPid);
+                if (pid is not null) _terminal = new TerminalSession(id, dir, pid.Value);
+
+                if (file.TerminalPid != pid)
+                {
+                    file.TerminalPid = pid;
+                    _store.MarkDirty();
+                }
+            }
+        }
+
+        UpdateTerminalLabel();
+    }
+
+    private void UpdateTerminalLabel()
+    {
+        TerminalRunning = _terminal is not null && ClaudeTerminal.IsAlive(_terminal.Pid);
+
+        if (!TerminalRunning) _terminal = null;
+
+        if (CurrentKey is null)
+        {
+            TerminalLabel = "No terminal";
+            TerminalTooltip = "Open a session first";
+            return;
+        }
+
+        var id = _store.ForFile(CurrentKey).ClaudeSessionId;
+        var dir = SessionDir;
+
+        if (TerminalRunning && _terminal is not null)
+        {
+            TerminalLabel = $"● {Path.GetFileName(_terminal.Dir.TrimEnd('\\'))} · {_terminal.SessionId[..8]}";
+            TerminalTooltip = $"Claude Code is running in {_terminal.Dir}\nSession {_terminal.SessionId}\n" +
+                              "Click to bring its window to the front";
+        }
+        else if (id is { Length: > 0 })
+        {
+            TerminalLabel = $"○ resume {id[..8]}";
+            TerminalTooltip = $"This session's conversation is {id}.\nStart the terminal to resume it in {dir}";
+        }
+        else
+        {
+            TerminalLabel = "○ No terminal";
+            TerminalTooltip = dir.Length == 0
+                ? "No session directory for this project — set ProjectSessionDirs or DefaultSessionDir in settings.json"
+                : $"Start Claude Code in {dir}";
+        }
+    }
+
+    /// <summary>
+    /// Opens a terminal for this session, resuming its conversation if it has one. The GUID is
+    /// minted here, before anything runs, so state.json can record which conversation a log file
+    /// belongs to rather than guessing afterwards from whichever transcript appeared last.
+    /// </summary>
+    [RelayCommand]
+    private async Task StartTerminal()
+    {
+        if (CurrentKey is null || _doc is null) return;
+
+        if (TerminalRunning)
+        {
+            ShowTerminal();
+            return;
+        }
+
+        var dir = SessionDir;
+        if (dir.Length == 0)
+        {
+            Status = "No session directory for this project — set DefaultSessionDir in settings.json";
+            return;
+        }
+
+        if (!Directory.Exists(dir))
+        {
+            Status = $"Session directory {dir} does not exist";
+            return;
+        }
+
+        var file = _store.ForFile(CurrentKey);
+        var id = file.ClaudeSessionId is { Length: > 0 } existing ? existing : ClaudeTerminal.NewSessionId();
+        var title = $"{Path.GetFileNameWithoutExtension(_doc.Path)} · ClaudeLog";
+
+        TerminalBusy = true;
+        Status = $"Starting Claude Code in {dir}…";
+
+        try
+        {
+            var session = await ClaudeTerminal.StartAsync(_settings, id, dir, title);
+            _terminal = session;
+
+            file.ClaudeSessionId = session.SessionId;
+            file.SessionDir = session.Dir;
+            file.TerminalPid = session.Pid;
+            file.SessionStartedAt = DateTimeOffset.Now;
+            _store.MarkDirty();
+            _store.Save();
+
+            Status = $"Claude Code running in {dir} · session {session.SessionId[..8]}";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Could not start the terminal: {ex.Message}";
+            Log.Warn($"terminal start {id}: {ex}");
+        }
+        finally
+        {
+            TerminalBusy = false;
+            UpdateTerminalLabel();
+        }
+    }
+
+    [RelayCommand]
+    private void ShowTerminal()
+    {
+        if (_terminal is null)
+        {
+            Status = "No terminal running for this session";
+            return;
+        }
+        ClaudeTerminal.Show(_settings, _terminal);
+    }
+
+    /// <summary>
+    /// Forgets the conversation without touching it, so the next start opens a fresh one. The old
+    /// transcript stays on disk and `claude --resume` can still reach it.
+    /// </summary>
+    [RelayCommand]
+    private void NewClaudeSession()
+    {
+        if (CurrentKey is null) return;
+
+        var file = _store.ForFile(CurrentKey);
+        if (file.ClaudeSessionId is { Length: > 0 } old) ClaudeTerminal.Forget(old);
+
+        file.ClaudeSessionId = null;
+        file.TerminalPid = null;
+        file.SessionStartedAt = null;
+        _store.MarkDirty();
+
+        _terminal = null;
+        UpdateTerminalLabel();
+        Status = "Next start opens a new Claude Code conversation for this session";
+    }
+
+    /// <summary>Changes where this session's Claude Code runs, for this file only.</summary>
+    [RelayCommand]
+    private async Task ChangeSessionDir()
+    {
+        if (CurrentKey is null || AskForText is null) return;
+
+        var current = SessionDir;
+        var answer = await AskForText("Session directory", "Claude Code runs in", current, current.Length,
+            value => Directory.Exists(value.Trim()) ? null : "That folder doesn't exist.");
+
+        if (answer is null) return;
+
+        _store.ForFile(CurrentKey).SessionDir = answer.Trim();
+        _store.MarkDirty();
+        UpdateTerminalLabel();
+        Status = $"This session's Claude Code will run in {answer.Trim()}";
+    }
+
+    // --------------------------------------------------------------- send
+
+    /// <summary>
+    /// Sends a prompt straight into the session's terminal — the thing this app exists to make
+    /// unremarkable. Delivery goes through the console rather than the clipboard, so it doesn't
+    /// take focus and doesn't disturb whatever is on the clipboard.
+    /// </summary>
+    [RelayCommand]
+    private async Task SendPrompt(PromptViewModel? prompt)
+    {
+        prompt ??= SelectedPrompt;
+        if (prompt is null || CurrentKey is null) return;
+
+        if (!TerminalRunning)
+        {
+            if (!_settings.AutoStartTerminal)
+            {
+                Status = "No terminal for this session — start one first";
+                return;
+            }
+
+            await StartTerminal();
+            if (!TerminalRunning) return;
+        }
+
+        await Deliver(prompt.Text, CurrentKey, prompt.Hash, $"prompt {prompt.Number}");
+    }
+
+    /// <summary>
+    /// Writes one prompt to the terminal and then checks Claude Code's own transcript to see
+    /// whether it was taken as a prompt. The write succeeding only means the terminal is alive:
+    /// at a permission prompt the same keystrokes answer that instead, and the transcript is the
+    /// only place that tells the two apart.
+    /// </summary>
+    private async Task Deliver(string text, string fileKey, string hash, string label)
+    {
+        if (_terminal is null) return;
+
+        var session = _terminal;
+        var sentAt = DateTimeOffset.Now;
+
+        var error = await Task.Run(() =>
+            ConsoleInput.SendPrompt(session.Pid, text, _settings.SubmitDelayMs));
+
+        if (error is not null)
+        {
+            Status = $"Could not send {label}: {error}";
+            UpdateTerminalLabel();
+            return;
+        }
+
+        if (_settings.MarkSentOnSend)
+        {
+            MarkSent(fileKey, hash);
+            if (string.Equals(fileKey, CurrentKey, StringComparison.OrdinalIgnoreCase))
+            {
+                var shown = Prompts.FirstOrDefault(p => p.Hash == hash);
+                if (shown is not null) shown.Status = PromptStatus.Sent;
+            }
+            RebuildQueue();
+        }
+
+        Status = $"Sent {label} to {session.SessionId[..8]}";
+        Confirm(session, sentAt, label);
+    }
+
+    /// <summary>
+    /// Watches for the prompt to show up in the transcript and says so, without holding up the
+    /// command that sent it. Claude Code queues input while it's working, so the next prompt can
+    /// go the moment this one is written — waiting for confirmation before re-enabling Send would
+    /// put an eight-second pause between prompts for no reason.
+    /// </summary>
+    private void Confirm(TerminalSession session, DateTimeOffset sentAt, string label)
+    {
+        var transcript = ClaudeTerminal.TranscriptPath(_settings.ClaudeProjectsDir, session.Dir, session.SessionId);
+
+        _ = Task.Run(async () =>
+        {
+            var confirmed = await SessionTranscript.WaitForPromptAsync(transcript, sentAt, TimeSpan.FromSeconds(10));
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                // Only speak up if nothing else has happened since; a later send's message is
+                // newer news than this one's confirmation.
+                if (Status != $"Sent {label} to {session.SessionId[..8]}") return;
+
+                Status = confirmed
+                    ? $"Sent {label} · Claude Code has it"
+                    : $"Sent {label} · not confirmed in the transcript — check the terminal";
+            });
+        });
+    }
+
     // --------------------------------------------------------------- copy
 
     /// <summary>
-    /// Copying is the act of sending: it marks the prompt sent, drops it from the queue and
-    /// timestamps it. The app never types into the terminal — the paste stays Scott's.
+    /// Copying is the act of sending by hand: it marks the prompt sent, drops it from the queue
+    /// and timestamps it. It stays alongside Send for the times the prompt is going somewhere
+    /// ClaudeLog didn't start.
     /// </summary>
     [RelayCommand]
     private async Task CopyPrompt(PromptViewModel? prompt)
@@ -570,6 +875,52 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         Status = "Next queued prompt is on the clipboard";
     }
 
+    /// <summary>
+    /// Sends the head of the queue to the open session's terminal. The queue spans files, so this
+    /// only sends what belongs to the session that is open — a prompt from another file has its
+    /// own terminal, and firing it into this one would put it in the wrong conversation.
+    /// </summary>
+    [RelayCommand]
+    private async Task SendNextQueued()
+    {
+        var entry = _store.State.Queue.FirstOrDefault();
+        if (entry is null)
+        {
+            Status = "Queue is empty";
+            return;
+        }
+
+        if (!string.Equals(entry.File, CurrentKey, StringComparison.OrdinalIgnoreCase))
+        {
+            Status = $"Next queued prompt belongs to {entry.File} — open it to send it";
+            return;
+        }
+
+        var text = ResolveQueuedText(entry);
+        if (text is null)
+        {
+            Status = "Queued prompt no longer exists — dropping it";
+            _store.State.Queue.Remove(entry);
+            _store.MarkDirty();
+            RebuildQueue();
+            return;
+        }
+
+        if (!TerminalRunning)
+        {
+            if (!_settings.AutoStartTerminal)
+            {
+                Status = "No terminal for this session — start one first";
+                return;
+            }
+
+            await StartTerminal();
+            if (!TerminalRunning) return;
+        }
+
+        await Deliver(text, entry.File, entry.Hash, "the queued prompt");
+    }
+
     private string? ResolveQueuedText(QueueEntry entry)
     {
         try
@@ -660,6 +1011,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     private void OnTick(object? sender, EventArgs e)
     {
         UpdateReset();
+
+        // The terminal can be closed from under the app at any moment, and a Send button that
+        // still looks armed after that is worse than no button. Checked on the second, not on the
+        // click, so the pill goes grey when the window closes rather than when it is next used.
+        if (TerminalRunning != (_terminal is not null && ClaudeTerminal.IsAlive(_terminal.Pid)))
+        {
+            UpdateTerminalLabel();
+        }
+
         _store.SaveIfDirty();
     }
 
@@ -703,7 +1063,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             if (_settings.FlashOnReset) FlashWindow?.Invoke();
 
             var queued = Queue.Count;
-            if (_settings.StageClipboardOnReset && queued > 0)
+
+            // Off by default. The reset usually lands while Scott is away from the machine, and a
+            // prompt that sends itself into a session nobody is watching is not a favour.
+            if (_settings.AutoSendOnReset && queued > 0 && TerminalRunning)
+            {
+                await SendNextQueued();
+                Notify?.Invoke("Session limit reset",
+                    $"Sent the next queued prompt. {queued - 1} still queued.");
+            }
+            else if (_settings.StageClipboardOnReset && queued > 0)
             {
                 await CopyNextQueued();
                 Notify?.Invoke("Session limit reset",

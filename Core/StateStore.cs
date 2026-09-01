@@ -29,6 +29,28 @@ public sealed class FileState
     public ParseMode Mode { get; set; } = ParseMode.Legacy;
 
     public Dictionary<string, PromptState> Prompts { get; set; } = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The Claude Code conversation this file's prompts are sent to. ClaudeLog picks the GUID and
+    /// passes it to `claude --session-id`, so it is known before the session exists and survives
+    /// the terminal being closed and reopened — `claude --resume` takes it straight back.
+    /// </summary>
+    public string? ClaudeSessionId { get; set; }
+
+    /// <summary>
+    /// The directory that session runs in. Stored per file rather than only per project because
+    /// it is half of the transcript's path on disk, and a project's default can be changed later
+    /// without stranding the sessions that were started under the old one.
+    /// </summary>
+    public string? SessionDir { get; set; }
+
+    /// <summary>
+    /// The terminal process the session was last seen in. A claim, not a fact: it is checked
+    /// against the PID file and the live process list before anything is sent to it.
+    /// </summary>
+    public int? TerminalPid { get; set; }
+
+    public DateTimeOffset? SessionStartedAt { get; set; }
 }
 
 public sealed class QueueEntry

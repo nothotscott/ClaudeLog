@@ -10,7 +10,8 @@ namespace ClaudeLog.Core;
 public static class Cli
 {
     private static readonly string[] Commands =
-        ["--parse", "--tree", "--quota", "--state", "--spell", "--selftest", "--startup", "--help", "-h", "/?"];
+        ["--parse", "--tree", "--quota", "--state", "--spell", "--selftest", "--startup",
+         "--terminal", "--send", "--help", "-h", "/?"];
 
     public static bool IsHeadless(string[] args) => args.Any(a => Commands.Contains(a, StringComparer.OrdinalIgnoreCase));
 
@@ -29,6 +30,8 @@ public static class Cli
                 "--state" => State(),
                 "--selftest" => SelfTest.Run(),
                 "--spell" => Spell(args, settings),
+                "--terminal" => args.Contains("--start") ? StartTerminal(args, settings) : Terminal(settings),
+                "--send" => Send(args, settings),
                 _ => Help(),
             };
         }
@@ -51,9 +54,124 @@ public static class Cli
               ClaudeLog --quota               show the detected session-limit reset
               ClaudeLog --state               show where state and settings live
               ClaudeLog --spell <file>        words the spell checker would flag in a file
+              ClaudeLog --terminal            per-session Claude Code sessions and their terminals
+                        --start <dir>         open one there and print its session id and pid
+              ClaudeLog --send <pid> <text>   write one prompt into a terminal's console
               ClaudeLog --selftest            check the parser and the save round-trip
               ClaudeLog --startup             boot the UI without showing it, then exit
             """);
+        return 0;
+    }
+
+    /// <summary>
+    /// What the app would talk to: every file that has a Claude Code session, where it runs,
+    /// whether its terminal is still alive and whether its transcript is on disk. This is the
+    /// first thing to look at when Send says the terminal isn't there.
+    /// </summary>
+    private static int Terminal(Settings settings)
+    {
+        var store = StateStore.Load();
+        Console.WriteLine($"terminal   {settings.TerminalExe} {settings.TerminalArgs}");
+        Console.WriteLine($"claude     {settings.ClaudeExe}");
+        Console.WriteLine($"default    {(settings.DefaultSessionDir.Length == 0 ? "(project source)" : settings.DefaultSessionDir)}");
+        Console.WriteLine($"tabs       {Paths.TabsDir}");
+        Console.WriteLine();
+
+        var sessions = store.State.Files
+            .Where(f => f.Value.ClaudeSessionId is { Length: > 0 })
+            .OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (sessions.Count == 0)
+        {
+            Console.WriteLine("no session has been started from ClaudeLog yet");
+            return 0;
+        }
+
+        foreach (var (key, file) in sessions)
+        {
+            var id = file.ClaudeSessionId!;
+            var dir = file.SessionDir ?? "";
+            var pid = ClaudeTerminal.Reattach(id, file.TerminalPid);
+            var transcript = dir.Length == 0
+                ? null
+                : ClaudeTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, id);
+
+            Console.WriteLine($"  {key}");
+            Console.WriteLine($"    session   {id}");
+            Console.WriteLine($"    dir       {(dir.Length == 0 ? "(unset)" : dir)}");
+            Console.WriteLine($"    terminal  {(pid is null ? "not running" : $"pid {pid}")}");
+            Console.WriteLine($"    slug      {(dir.Length == 0 ? "-" : ClaudeTerminal.SlugFor(dir))}");
+
+            if (transcript is not null)
+            {
+                var last = SessionTranscript.LastPromptAt(transcript);
+                Console.WriteLine($"    prompts   {(last is null ? "no transcript yet" : $"last {last.Value.LocalDateTime:yyyy-MM-dd HH:mm}")}");
+            }
+
+            Console.WriteLine();
+        }
+
+        return 0;
+    }
+
+    /// <summary>
+    /// Opens a terminal the way the app does and prints what it got back. This is the only way to
+    /// check the launch path without the UI, and it is where a wrong TerminalArgs or a Claude Code
+    /// that isn't on PATH shows itself.
+    /// </summary>
+    private static int StartTerminal(string[] args, Settings settings)
+    {
+        var dir = args.SkipWhile(a => !a.Equals("--start", StringComparison.OrdinalIgnoreCase))
+            .Skip(1).FirstOrDefault();
+
+        if (dir is null)
+        {
+            Console.Error.WriteLine("usage: ClaudeLog --terminal --start <dir> [session-id]");
+            return 1;
+        }
+
+        dir = Path.GetFullPath(dir);
+        var id = args.Skip(1).FirstOrDefault(a => Guid.TryParse(a, out _)) ?? ClaudeTerminal.NewSessionId();
+
+        var session = ClaudeTerminal.StartAsync(settings, id, dir, "ClaudeLog --terminal").GetAwaiter().GetResult();
+
+        Console.WriteLine($"session   {session.SessionId}");
+        Console.WriteLine($"dir       {session.Dir}");
+        Console.WriteLine($"pid       {session.Pid}");
+        Console.WriteLine($"window    {session.WindowName}");
+        Console.WriteLine($"transcript {ClaudeTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, session.SessionId)}");
+        return 0;
+    }
+
+    /// <summary>
+    /// Writes one prompt into a running terminal, for checking delivery without the UI.
+    ///
+    /// A console attachment is per-process, so <see cref="ConsoleInput"/> has to take this
+    /// process's console away to borrow the target's. That is the console this command prints to,
+    /// hence the re-attach before anything is written.
+    /// </summary>
+    private static int Send(string[] args, Settings settings)
+    {
+        var rest = args.Skip(1).ToArray();
+        if (rest.Length < 2 || !int.TryParse(rest[0], out var pid))
+        {
+            Console.Error.WriteLine("usage: ClaudeLog --send <pid> <text>");
+            return 1;
+        }
+
+        var text = string.Join(' ', rest.Skip(1));
+        var error = ConsoleInput.SendPrompt(pid, text, settings.SubmitDelayMs);
+        ConsoleInput.ReattachToParent();
+        BindConsoleStreams();
+
+        if (error is not null)
+        {
+            Console.Error.WriteLine($"error: {error}");
+            return 1;
+        }
+
+        Console.WriteLine($"sent {text.Length} characters to pid {pid}");
         return 0;
     }
 
@@ -231,14 +349,22 @@ public static class Cli
         try
         {
             if (!AttachConsole(-1)) return;
-            var stdout = new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true };
-            Console.SetOut(stdout);
-            var stderr = new StreamWriter(Console.OpenStandardError()) { AutoFlush = true };
-            Console.SetError(stderr);
+            BindConsoleStreams();
         }
         catch (Exception ex)
         {
             Log.Warn($"console attach failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Points Console at the currently attached console. Needed again after --send, because the
+    /// handles behind the old writers belong to a console this process is no longer attached to
+    /// and everything written to them goes nowhere.
+    /// </summary>
+    private static void BindConsoleStreams()
+    {
+        Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
+        Console.SetError(new StreamWriter(Console.OpenStandardError()) { AutoFlush = true });
     }
 }

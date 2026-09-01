@@ -31,6 +31,11 @@ public static class SelfTest
         QuotaIgnoresPastAndMalformedRecords();
         StateSurvivesAnEditAndAReparse();
         RenameCarriesFileState();
+        SlugMatchesClaudeCodesProjectFolders();
+        TranscriptPathFindsASessionOnDisk();
+        TranscriptReadsTheLastPromptTime();
+        SessionDirFallsBackFromProjectToDefaultToSource();
+        TerminalSessionSurvivesAReload();
         SessionsAreSortedNewestFirst();
         SessionNamesAreValidated();
         MarkdownSpansCoverTheHighlightedShapes();
@@ -242,6 +247,124 @@ public static class SelfTest
         {
             Directory.Delete(dir, true);
         }
+    }
+
+    // ------------------------------------------------------------ terminal
+
+    /// <summary>
+    /// The slug is how a known session id becomes a path on disk, and it is the one piece of the
+    /// terminal integration that is pure guesswork about someone else's format. These are real
+    /// directory names from %USERPROFILE%\.claude\projects on this machine.
+    /// </summary>
+    private static void SlugMatchesClaudeCodesProjectFolders()
+    {
+        Equal("D--Source", ClaudeTerminal.SlugFor(@"D:\Source"), "slug for a drive root");
+        Equal("D--Source-BrandBully", ClaudeTerminal.SlugFor(@"D:\Source\BrandBully"), "slug for a project");
+        Equal("C--Users-Scott", ClaudeTerminal.SlugFor(@"C:\Users\Scott"), "slug for a profile directory");
+        Equal("D--Source-repos-FileFixup", ClaudeTerminal.SlugFor(@"D:\Source\repos\FileFixup"),
+            "slug for a nested project");
+
+        // A hyphen in a folder name is already the replacement character, so it survives unchanged.
+        Equal("D--Source-proxmox-control", ClaudeTerminal.SlugFor(@"D:\Source\proxmox-control"),
+            "slug leaves an existing hyphen alone");
+
+        // A trailing separator is not part of the name Claude Code sees.
+        Equal(ClaudeTerminal.SlugFor(@"D:\Source"), ClaudeTerminal.SlugFor(@"D:\Source\"),
+            "a trailing backslash doesn't change the slug");
+    }
+
+    private static void TranscriptPathFindsASessionOnDisk()
+    {
+        var path = ClaudeTerminal.TranscriptPath(@"C:\p", @"D:\Source", "0434f382-4f95-47cf-b6fd-7d4ab748f378");
+        Equal(Path.Combine(@"C:\p", "D--Source", "0434f382-4f95-47cf-b6fd-7d4ab748f378.jsonl"), path,
+            "transcript path is projects/slug/session.jsonl");
+    }
+
+    /// <summary>
+    /// Confirming a send means finding a user entry newer than the moment it was written. Only the
+    /// timestamp is read — Claude Code reshapes the text it stores, so matching on content would
+    /// report delivered prompts as missing.
+    /// </summary>
+    private static void TranscriptReadsTheLastPromptTime()
+    {
+        var dir = TempDir();
+        try
+        {
+            var path = Path.Combine(dir, "session.jsonl");
+            File.WriteAllLines(path, [
+                """{"type":"user","timestamp":"2026-09-01T10:00:00.000Z","message":{"role":"user"}}""",
+                """{"type":"assistant","timestamp":"2026-09-01T10:00:05.000Z"}""",
+                """{"type":"user","timestamp":"2026-09-01T10:01:00.000Z","message":{"role":"user"}}""",
+                """{"type":"assistant","timestamp":"2026-09-01T10:01:09.000Z"}""",
+            ]);
+
+            var last = SessionTranscript.LastPromptAt(path);
+            Equal(DateTimeOffset.Parse("2026-09-01T10:01:00.000Z").UtcDateTime, last?.UtcDateTime,
+                "the newest user entry is the one reported");
+
+            True(SessionTranscript.LastPromptAt(Path.Combine(dir, "missing.jsonl")) is null,
+                "a session with no transcript reads as unconfirmed, not as an error");
+
+            File.WriteAllLines(path, ["not json at all", """{"type":"assistant","timestamp":"2026-09-01T10:00:00Z"}"""]);
+            True(SessionTranscript.LastPromptAt(path) is null,
+                "a transcript with no user entries reads as unconfirmed");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// Where a session's Claude Code runs. The fallback order is the whole feature for anyone who
+    /// hasn't configured anything: a fresh install runs in the project's own source folder, and
+    /// one DefaultSessionDir moves every project to a shared root at once.
+    /// </summary>
+    private static void SessionDirFallsBackFromProjectToDefaultToSource()
+    {
+        var settings = new Settings
+        {
+            ProjectSources = { ["CallTree"] = @"D:\Source\repos\CallTree", ["DevMem"] = @"D:\Source\repos\DevMem" },
+        };
+
+        Equal(@"D:\Source\repos\CallTree", settings.SessionDirFor("CallTree"),
+            "with nothing configured, a session runs in the project's source folder");
+        Equal("", settings.SessionDirFor("Unknown"), "an unmapped project has no session directory");
+
+        settings.DefaultSessionDir = @"D:\Source";
+        Equal(@"D:\Source", settings.SessionDirFor("CallTree"),
+            "a default session directory overrides the project source");
+        Equal(@"D:\Source", settings.SessionDirFor("Unknown"),
+            "the default also covers projects with no source mapping");
+
+        settings.ProjectSessionDirs["CallTree"] = @"D:\Source\repos\CallTree";
+        Equal(@"D:\Source\repos\CallTree", settings.SessionDirFor("CallTree"),
+            "a project's own session directory wins over the default");
+        Equal(@"D:\Source", settings.SessionDirFor("DevMem"),
+            "and leaves the other projects on the default");
+    }
+
+    /// <summary>
+    /// The session id and its directory are the two things that have to survive a restart: without
+    /// them the app can neither resume the conversation nor find its transcript.
+    /// </summary>
+    private static void TerminalSessionSurvivesAReload()
+    {
+        var store = new StateStore();
+        const string file = "ClaudeLog/claude_log.md";
+
+        var state = store.ForFile(file);
+        state.ClaudeSessionId = "0434f382-4f95-47cf-b6fd-7d4ab748f378";
+        state.SessionDir = @"D:\Source";
+        state.TerminalPid = 4242;
+
+        store.RenameFile(file, "ClaudeLog/renamed.md");
+        var moved = store.PeekFileMode("ClaudeLog/renamed.md");
+        True(moved is not null, "a renamed file keeps its file state");
+        Equal("0434f382-4f95-47cf-b6fd-7d4ab748f378", store.ForFile("ClaudeLog/renamed.md").ClaudeSessionId,
+            "a rename carries the Claude session id with it");
+        Equal(@"D:\Source", store.ForFile("ClaudeLog/renamed.md").SessionDir,
+            "a rename carries the session directory with it");
     }
 
     // --------------------------------------------------------------- state

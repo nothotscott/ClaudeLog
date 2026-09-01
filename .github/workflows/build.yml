@@ -126,9 +126,17 @@ jobs:
 
           # The UI. --selftest never touches Avalonia, so without this a bundle that failed to
           # unpack its native libraries would pass everything else and break on first download.
+          #
+          # Match the `ok` sentinel, not the prose after it. Program.Startup only reaches that line
+          # once every window has been constructed, so the sentinel is the real contract; the rest
+          # of the sentence is a human-readable description that has already been reworded once
+          # (c81ad90 turned "MainWindow loaded" into "MainWindow (WxH) and TextPrompt loaded"),
+          # silently breaking this check until the next push happened to run it.
           Write-Host '--- startup ---'
           $startup = Invoke-ClaudeLog '--startup'
-          if ($startup -notmatch 'MainWindow loaded') { throw 'the window did not load' }
+          foreach ($expected in '(?m)^ok\s', 'MainWindow', 'TextPrompt') {
+            if ($startup -notmatch $expected) { throw "the window did not load (no '$expected'): $startup" }
+          }
 
           # The logic: parsing, byte-exact saving, the quota format, state, highlighting, spelling.
           Write-Host '--- selftest ---'

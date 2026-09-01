@@ -21,6 +21,12 @@ public static class Paths
 
     public static string StateFile => Path.Combine(AppDataDir, "state.json");
 
+    /// <summary>
+    /// Per-terminal launch artefacts: the script a tab runs and the PID it reports back. Here
+    /// rather than in %TEMP% so a tab that outlives a restart of the app can still be found.
+    /// </summary>
+    public static string TabsDir => Path.Combine(AppDataDir, "tabs");
+
     public static string DefaultLogRoot { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ClaudeLog");
 

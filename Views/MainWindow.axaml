@@ -14,7 +14,11 @@
 
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+S" Command="{Binding SaveEditorCommand}" />
-    <KeyBinding Gesture="Ctrl+Enter" Command="{Binding CopyPromptCommand}" />
+    <!-- Ctrl+Enter sends. Copy keeps a binding for the prompts that are going somewhere
+         ClaudeLog didn't start, but it is no longer the default way out of the editor. -->
+    <KeyBinding Gesture="Ctrl+Enter" Command="{Binding SendPromptCommand}" />
+    <KeyBinding Gesture="Ctrl+Shift+Enter" Command="{Binding CopyPromptCommand}" />
+    <KeyBinding Gesture="Ctrl+T" Command="{Binding StartTerminalCommand}" />
     <KeyBinding Gesture="Ctrl+N" Command="{Binding NewPromptCommand}" />
     <KeyBinding Gesture="Ctrl+Q" Command="{Binding QueuePromptCommand}" />
     <KeyBinding Gesture="F5" Command="{Binding RefreshTreeCommand}" />
@@ -110,6 +114,24 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
                         IsVisible="{Binding HasSession}">
+              <!--
+                The terminal control is one button, because there is only ever one thing to do with
+                it: start it when it isn't running, bring it forward when it is. Everything rarer —
+                a fresh conversation, a different working directory — is on its context menu.
+              -->
+              <Button Command="{Binding StartTerminalCommand}"
+                      IsEnabled="{Binding !TerminalBusy}"
+                      ToolTip.Tip="{Binding TerminalTooltip}">
+                <TextBlock Text="{Binding TerminalLabel}" FontSize="12" />
+                <Button.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="Show terminal" Command="{Binding ShowTerminalCommand}" />
+                    <MenuItem Header="New Claude session" Command="{Binding NewClaudeSessionCommand}" />
+                    <Separator />
+                    <MenuItem Header="Session directory…" Command="{Binding ChangeSessionDirCommand}" />
+                  </ContextMenu>
+                </Button.ContextMenu>
+              </Button>
               <!-- Splitting and converting moved to the file's context menu in the tree: they are
                    per-file, and they come up once in the life of a file, not once a session. -->
               <Button Content="New prompt" Command="{Binding NewPromptCommand}"
@@ -175,7 +197,7 @@
           </ListBox.Styles>
           <ListBox.ItemTemplate>
             <DataTemplate DataType="vm:PromptViewModel">
-              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto">
+              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto">
                 <TextBlock Grid.Column="0" Text="{Binding Number}" Classes="dim"
                            FontSize="11" Width="24" TextAlignment="Right" Margin="0,2,8,0"
                            VerticalAlignment="Top" />
@@ -185,12 +207,17 @@
                         IsVisible="{Binding ShowStatus}" Margin="8,0" VerticalAlignment="Top">
                   <TextBlock Text="{Binding StatusLabel}" FontSize="10" Foreground="White" />
                 </Border>
-                <Button Grid.Column="3" Content="Copy" FontSize="11" Padding="8,2"
-                        VerticalAlignment="Top"
-                        ToolTip.Tip="Copy to clipboard and mark sent (Ctrl+Enter)"
+                <Button Grid.Column="3" Content="Send" FontSize="11" Padding="8,2"
+                        VerticalAlignment="Top" Classes="accent"
+                        ToolTip.Tip="Send straight to this session's Claude Code (Ctrl+Enter)"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).SendPromptCommand}"
+                        CommandParameter="{Binding}" />
+                <Button Grid.Column="4" Content="Copy" FontSize="11" Padding="8,2"
+                        Margin="4,0,0,0" VerticalAlignment="Top"
+                        ToolTip.Tip="Copy to clipboard and mark sent (Ctrl+Shift+Enter)"
                         Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).CopyPromptCommand}"
                         CommandParameter="{Binding}" />
-                <Button Grid.Column="4" Content="Queue" FontSize="11" Padding="8,2"
+                <Button Grid.Column="5" Content="Queue" FontSize="11" Padding="8,2"
                         Margin="4,0,0,0" VerticalAlignment="Top"
                         ToolTip.Tip="Send when the limit resets (Ctrl+Q)"
                         Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).QueuePromptCommand}"
@@ -225,7 +252,9 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
               <Button Content="Save" Command="{Binding SaveEditorCommand}" ToolTip.Tip="Ctrl+S" />
-              <Button Content="Copy" Command="{Binding CopyPromptCommand}" ToolTip.Tip="Ctrl+Enter" />
+              <Button Content="Copy" Command="{Binding CopyPromptCommand}" ToolTip.Tip="Ctrl+Shift+Enter" />
+              <Button Content="Send" Classes="accent" Command="{Binding SendPromptCommand}"
+                      ToolTip.Tip="Ctrl+Enter" />
             </StackPanel>
           </Grid>
 
@@ -276,11 +305,15 @@
           </StackPanel>
         </Border>
 
-        <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="2,14,2,6">
+        <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="2,14,2,6">
           <TextBlock Grid.Column="0" Text="QUEUE" Classes="h" VerticalAlignment="Center" />
           <Button Grid.Column="1" Content="Copy next" FontSize="11" Padding="8,2"
                   IsEnabled="{Binding HasQueue}"
                   Command="{Binding CopyNextQueuedCommand}" />
+          <Button Grid.Column="2" Content="Send next" FontSize="11" Padding="8,2" Margin="4,0,0,0"
+                  Classes="accent" IsEnabled="{Binding HasQueue}"
+                  ToolTip.Tip="Send the head of the queue to the open session's terminal"
+                  Command="{Binding SendNextQueuedCommand}" />
         </Grid>
 
         <ListBox Grid.Row="2" ItemsSource="{Binding Queue}">

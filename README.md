@@ -1,7 +1,7 @@
 # ClaudeLog
 
-A prompt editor for the way I actually use Claude Code: write the prompt in markdown, copy it,
-paste it into the terminal — and keep a log of every prompt, organized by project.
+A prompt editor for the way I actually use Claude Code: write the prompt in markdown, send it
+straight to a Claude Code session — and keep a log of every prompt, organized by project.
 
 It replaces Notepad++ for the files under `C:\Users\Scott\Documents\ClaudeLog`, without changing
 them. Same folders, same files, same plain markdown.
@@ -13,16 +13,22 @@ them. Same folders, same files, same plain markdown.
 - **Projects and sessions** in a tree — one folder per project, one file per session, exactly the
   layout that's already there. `.md` and `.txt` both count. Sessions are listed newest-edited
   first, so whatever you were working on is at the top.
-- **Prompts as units.** A session file is split into its prompts, each with a one-click **Copy**
-  that also marks it sent and timestamps it. No more selecting to the next blank line by hand.
+- **Prompts as units.** A session file is split into its prompts, each with a one-click **Send**
+  that puts it straight into that session's Claude Code, marks it sent and timestamps it. No more
+  selecting to the next blank line by hand. **Copy** is still there for prompts going somewhere
+  else.
+- **A Claude Code session per log file.** Each session file remembers the conversation it belongs
+  to and the directory that conversation runs in, so reopening a file three weeks later and
+  pressing **Send** resumes the same conversation rather than starting a new one.
 - **The whole file, visible.** Each prompt is shown in full and highlighted, so the list reads like
   the session file itself rather than an index of it — and the prompt you're editing updates there
   as you type.
 - **A queue for when the session limit hits.** Queue the prompts you couldn't send; ClaudeLog
   reads the reset time out of Claude Code's own transcripts, counts down, and when the limit
   resets it toasts you, flashes the taskbar and puts the next queued prompt on the clipboard.
-  It never types into your terminal — the paste stays yours. If detection ever comes up empty,
-  right-click the countdown for **Set the reset time manually**.
+  It doesn't send it for you unless you ask (`AutoSendOnReset`) — the reset usually lands while
+  you're away from the machine. If detection ever comes up empty, right-click the countdown for
+  **Set the reset time manually**.
 - **Explorer shortcuts** for the project folder and its attachment folders (`Examples`, `Plans`),
   from the tree or the session header.
 - **File management in the tree.** Right-click a project to add a session, a session to rename it or
@@ -47,6 +53,51 @@ The editor is built for getting a prompt down fast and reading it back.
 Run `ClaudeLog --spell <file>` to see exactly what would be flagged in a file, and why the filter
 matters — on a 540-line session it's about a dozen words, most of them real typos.
 
+## Sending
+
+Each session file gets its own Claude Code conversation. The button in the session header starts
+it — `○ No terminal` becomes `● Source · ca62d7e8` — and from then on **Send** (or `Ctrl+Enter`)
+puts the selected prompt into it.
+
+- **It doesn't take focus and doesn't touch the clipboard.** The prompt is written into the
+  terminal's console directly, addressed by process, so it works with the window behind others or
+  minimised, and it can't land in the wrong window because you clicked somewhere mid-send.
+- **Multi-line prompts arrive as one prompt**, the same as a paste — newlines don't submit early.
+- **It checks that the prompt arrived.** After sending, ClaudeLog looks in Claude Code's own
+  transcript for the session and says either *"Claude Code has it"* or *"not confirmed in the
+  transcript — check the terminal"*. Writing to a console always succeeds if the console exists;
+  the transcript is the only thing that proves the prompt was taken as a prompt rather than
+  answering a permission dialog.
+- **The conversation outlives the terminal.** ClaudeLog picks the session GUID and passes it to
+  `claude --session-id`, then reuses it with `claude --resume`. Close the terminal, close the app,
+  come back next week — the same conversation reopens. **New Claude session** on the button's
+  right-click menu starts a fresh one.
+
+### Where a session runs
+
+Claude Code needs a working directory, and the useful one is usually not the project folder but a
+root above it that has a `CLAUDE.md` covering everything:
+
+```jsonc
+"DefaultSessionDir": "D:\\Source",          // every project runs here
+"ProjectSessionDirs": { "CallTree": "D:\\Source\\repos\\CallTree" }  // except this one
+```
+
+With neither set, a project's session runs in its `ProjectSources` folder. A single file can be
+pointed somewhere else with **Session directory…** on the terminal button's right-click menu; that
+choice sticks to the file, so changing a project's default later doesn't strand it.
+
+The terminal itself is a setting. Windows Terminal by default, but nothing depends on it —
+delivery goes through the Win32 console, which any terminal that hosts a real console provides:
+
+```jsonc
+"TerminalExe": "wt.exe",
+"TerminalArgs": "-w {0} new-tab --title {1} -d {2} powershell.exe -NoProfile -ExecutionPolicy Bypass -File {3}"
+```
+
+`{0}` window name, `{1}` tab title, `{2}` working directory, `{3}` the script that reports its PID
+and runs Claude Code.
+
 ## Prompt separators
 
 Two ways a file can be split, per file:
@@ -67,7 +118,9 @@ legacy file with explicit separators once its boundaries look right.
 | | |
 |---|---|
 | `Ctrl+S` | save the editor into the file |
-| `Ctrl+Enter` | copy the selected prompt, mark it sent |
+| `Ctrl+Enter` | send the selected prompt to this session's Claude Code, mark it sent |
+| `Ctrl+Shift+Enter` | copy the selected prompt instead, mark it sent |
+| `Ctrl+T` | start this session's terminal, or bring it to the front |
 | `Ctrl+N` | new prompt (focus jumps to the editor) |
 | `Ctrl+Q` | queue the selected prompt |
 | `Ctrl+E` | jump into the editor |
@@ -86,6 +139,9 @@ ClaudeLog --parse <file>     # how a file splits into prompts (--legacy / --mode
 ClaudeLog --quota            # the detected session-limit reset
 ClaudeLog --state            # where settings and state live
 ClaudeLog --spell <file>     # words the spell checker would flag in a file
+ClaudeLog --terminal         # every file's Claude session: directory, pid, transcript
+ClaudeLog --terminal --start <dir>   # open one there, print its session id and pid
+ClaudeLog --send <pid> <text>        # write one prompt into that terminal
 ClaudeLog --selftest         # parser, save round-trip, spelling and state checks
 ClaudeLog --startup          # boot the UI without showing it, then exit
 ```

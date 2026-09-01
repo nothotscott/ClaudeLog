@@ -24,7 +24,8 @@ Two things made that tedious, and they are what the app exists to fix:
   with nothing tracking when it can go. Prompts got lost or re-sent from memory.
 
 So ClaudeLog is a markdown editor whose unit is the *prompt*: browse projects and sessions, write,
-copy with one click, queue what can't be sent yet, and get told the moment the limit resets.
+send with one click into the session file's own Claude Code conversation, queue what can't be sent
+yet, and get told the moment the limit resets.
 
 The log tree is the product of a year of use and Scott likes it. **The app conforms to the tree;
 the tree is never reorganized to suit the app.**
@@ -43,12 +44,15 @@ dotnet run -- --tree              # projects, sessions, prompt counts, parse mod
 dotnet run -- --parse <file>      # prompt boundaries, hashes and statuses (--legacy / --modern)
 dotnet run -- --quota             # the detected session-limit reset
 dotnet run -- --state             # where settings and state live
+dotnet run -- --terminal          # each file's Claude session: directory, pid, last prompt
+dotnet run -- --terminal --start <dir>   # open one there; prints session id and pid
+dotnet run -- --send <pid> <text>        # write one prompt into that terminal
 dotnet run -- --startup           # boot Avalonia and load MainWindow without showing it, then exit
 ```
 
-There is no test project. **`--selftest` is the regression net** — 83 checks over prompt splitting,
+There is no test project. **`--selftest` is the regression net** — 102 checks over prompt splitting,
 byte-exact saving, the quota record format, the state-store invariants, tree ordering and naming,
-the highlighting rules and the spelling filters (including a real round-trip through the Windows
+the highlighting rules, the spelling filters (including a real round-trip through the Windows
 spell checker). Add to `SelfTest.cs` when changing any of those; it is far more useful than it
 looks, and it is how the parser rules below were validated against the real corpus.
 
@@ -73,7 +77,20 @@ Settled with Scott before any code was written. Don't relitigate without asking.
 | Prompt delimiter | `---` (**Modern**), with per-file **Legacy** blank-line mode | Legacy is what every existing file uses; Modern is unambiguous |
 | State store | `%LOCALAPPDATA%\ClaudeLog\` | The log tree is Syncthing-synced; state files there would conflict |
 | Reset countdown | Auto-detected from Claude Code transcripts, manual override | The timestamp is already on disk; manual entry is the fallback |
-| On reset | Toast + taskbar flash + stage the next queued prompt on the clipboard | **The app never types into the terminal and never sends prompts on its own** |
+| On reset | Toast + taskbar flash + stage the next queued prompt on the clipboard | Sending it instead is opt-in (`AutoSendOnReset`); the reset usually lands while Scott is away |
+| Sending | Write the prompt into the terminal's console, addressed by PID | See below — this **reversed** the original "never types into the terminal" |
+| Terminal | Windows Terminal, launched by the app, one window per session | Delivery is a Win32 console mechanism, so the host is a setting, not an assumption |
+| Session identity | ClaudeLog mints the GUID and passes `--session-id` | Known before the process exists, so state.json can record it rather than guess |
+
+### The reversed decision
+
+The app originally staged the clipboard and never touched the terminal, on the grounds that
+sending was Scott's to do. Scott asked for direct sending in September 2026: copy-and-paste was the
+last piece of manual work left, and it is the thing the app exists to remove.
+
+What the original decision was actually protecting against is still honoured — nothing sends
+without an explicit action. `AutoSendOnReset` is off by default, and it is the only path that
+could ever send unattended.
 
 ## The log tree (external, authoritative)
 
@@ -180,6 +197,77 @@ it passes. Dropping an expired override from that property makes the reset silen
 the countdown just goes back to "No limit pending" and the queue sits there. `OnResetReached` clears
 the override; the constructor clears one left stale by a previous run.
 
+## Sending prompts to a terminal
+
+Three mechanisms were on the table. The one in use was chosen after checking all three actually
+work on this machine, not from first principles.
+
+| | Verdict |
+|---|---|
+| Focus the terminal, `SendInput` Ctrl+V and Enter | Rejected. Steals focus, clobbers the clipboard, and lands wherever focus is a few ms later |
+| A terminal emulator inside the app (ConPTY + VT rendering in Avalonia) | Rejected. Thousands of lines of someone else's problem — alternate screen, mouse, resize, colour — to end up with a worse Windows Terminal |
+| `WriteConsoleInput` into the tab's console, addressed by PID | **In use.** No focus change, no clipboard, exact target, works minimised |
+
+A Windows Terminal tab gets its own pseudoconsole, and a pseudoconsole is a console object like
+any other — another process can `AttachConsole` to it and write input records. Verified end to
+end before any of this was built: injected bytes arrive at a Node raw-mode reader byte-identical,
+bracketed-paste markers included, and a real `claude` accepted a two-line prompt as one prompt.
+
+Four things about `ConsoleInput` are load-bearing:
+
+- **Bracketed paste is what makes multi-line work.** Text is wrapped in `ESC[200~` / `ESC[201~`,
+  exactly what a terminal sends on Ctrl+V. Without it every newline submits the prompt.
+- **The Enter goes in a second write, after `SubmitDelayMs`.** A carriage return in the same write
+  as the closing marker can be read as part of the paste and end up as a newline in the prompt.
+- **Console attachment is process-wide**, so `Write` is serialised behind a lock and gives the
+  attachment back when it's done. That's free in the GUI, which has no console — but `--send` is
+  printing to the parent console it just took away, hence `ReattachToParent` and the rebind of
+  `Console.Out` before it prints anything.
+- **The prompt is stripped of control characters.** A stray `ESC` in a pasted log would let the
+  text end its own bracketed paste, and everything after it would arrive as keystrokes.
+
+**A successful write proves nothing about acceptance.** Writing to a console succeeds whenever the
+console exists; at a permission prompt the same keystrokes answer that instead. `SessionTranscript`
+is the check that matters — it watches for a `"type":"user"` entry newer than the send. Only the
+*timestamp* is compared: Claude Code reshapes what it stores (long pastes, command expansion,
+attachments), so matching on text would report delivered prompts as missing.
+
+### Sessions and where they run
+
+`claude --session-id <uuid>` takes the id as an argument, so **ClaudeLog picks the GUID** and
+writes it into `state.json` next to the log file before anything runs. Discovering it afterwards by
+watching for a new transcript would be a guess whenever two sessions start close together. A file
+that already has an id is resumed with `--resume` instead — chosen by whether the transcript exists
+on disk, because `--session-id` on an existing session is an error.
+
+`FileState.SessionDir` is stored per file, not looked up per project, because it is half the path
+to the transcript: `ClaudeTerminal.SlugFor` turns `D:\Source` into `D--Source` (every non
+-alphanumeric character becomes a hyphen — the same rule `QuotaWatcher` relies on). Changing a
+project's default directory later must not strand the sessions started under the old one.
+
+`Settings.SessionDirFor` falls back project → global → `ProjectSources`. That ordering is the whole
+feature for anyone who hasn't configured anything: a fresh install runs each project's session in
+its own source folder, and one `DefaultSessionDir` moves every project to a shared root at once.
+Scott's is `D:\Source`, because the root `CLAUDE.md` there already knows where every project is.
+
+### Launch traps
+
+- **Windows Terminal treats `;` as its own argument separator**, so inline PowerShell needs
+  escaping through two layers of quoting. The tab runs a generated `.ps1` in `%LOCALAPPDATA%\
+  ClaudeLog\tabs\` instead — no separators, no nesting.
+- **`wt.exe` hands the tab to the running Windows Terminal process and exits**, so the PID it
+  returns is worthless. The script reports `$PID` to a file, and that is polled. The shell and
+  Claude Code share one console, so writing to the shell's PID reaches Claude Code's input.
+- **Claude Code marks its own environment.** A session that inherits `CLAUDE_CODE_CHILD_SESSION`
+  and friends writes *no transcript at all* — the terminal opens, prompts arrive, and only the
+  confirmation and the quota countdown quietly stop working. `Start` clears those variables, which
+  is why it uses `UseShellExecute = false`. This is not hypothetical: it is what happens every time
+  the app is launched from a Claude Code session, which is what "run the app" does.
+
+`ClaudeLog --terminal` lists every file's session, directory, PID and last recorded prompt;
+`--terminal --start <dir>` and `--send <pid> <text>` are the whole loop without the UI, and are how
+a wrong `TerminalArgs` shows itself.
+
 ## The editor
 
 The prompt editor is AvaloniaEdit, not a `TextBox` — per-run coloring and squiggle rendering both
@@ -250,6 +338,9 @@ reaching for a `TopLevel`.
 | `Core\MarkdownScanner.cs` | The markdown highlighting rules, as spans over a line. Shared by both renderers. |
 | `Core\StateStore.cs` | `state.json` — per-prompt status, per-file mode, queue, manual reset, last session. |
 | `Core\QuotaWatcher.cs` | Tails Claude Code transcripts for `quotaLimits.resetsAt`. Best-effort by design. |
+| `Core\ConsoleInput.cs` | `WriteConsoleInput` into another process's console: bracketed paste, then Enter. |
+| `Core\ClaudeTerminal.cs` | Starts Claude Code in a terminal; session ids, project slugs, PID discovery. |
+| `Core\SessionTranscript.cs` | Reads back the session's own transcript to confirm a prompt landed. |
 | `Core\Settings.cs`, `Paths.cs` | settings.json and the `%LOCALAPPDATA%` locations. |
 | `Core\Shell.cs` | Explorer open/reveal and the `FlashWindowEx` taskbar flash. |
 | `Core\Backups.cs` | Pre-destructive-write snapshots, kept in `%LOCALAPPDATA%`, out of the synced tree. |
@@ -360,8 +451,12 @@ to one machine, and a downloaded binary shouldn't arrive pre-filled with paths f
 
 ## Non-goals
 
-- **No typing into the terminal, no auto-send.** Explicitly rejected. The app stages the clipboard.
-- **No response capture.** Scott doesn't save Claude's responses and the log format has no place for
-  them. Further Claude Code integrations are expected — that's why parsing sits behind
-  `PromptParser` and quota reading behind `QuotaWatcher` — but nothing speculative gets built now.
+- **No unattended sending.** Every send is an explicit action. `AutoSendOnReset` is the single
+  exception and it is off by default. (Typing into the terminal at all *was* a non-goal until
+  September 2026 — see "The reversed decision" above.)
+- **No response capture.** Scott doesn't save Claude's responses and the log format has no place
+  for them. `SessionTranscript` reads the transcript only for a timestamp, and never stores
+  anything from it.
+- **No terminal emulator.** The app starts a terminal and writes to it; it does not draw one. See
+  the table in "Sending prompts to a terminal".
 - **No reorganizing the log tree**, and nothing written into it but the session files themselves.
