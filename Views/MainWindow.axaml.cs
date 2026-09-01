@@ -44,6 +44,9 @@ public partial class MainWindow : Window
 
             vm.FlashWindow = () => Shell.FlashTaskbar(TryGetPlatformHandle()?.Handle ?? 0);
 
+            vm.AskForText = (title, label, initial, select, validate) =>
+                TextPrompt.Show(this, title, label, initial, select, validate);
+
             var editor = this.FindControl<TextEditor>("Editor")!;
             var promptList = this.FindControl<ListBox>("PromptList")!;
 

@@ -30,7 +30,9 @@ public static class SelfTest
         QuotaReadsARejectedRecord();
         QuotaIgnoresPastAndMalformedRecords();
         StateSurvivesAnEditAndAReparse();
+        RenameCarriesFileState();
         SessionsAreSortedNewestFirst();
+        SessionNamesAreValidated();
         MarkdownSpansCoverTheHighlightedShapes();
         CodeSpansCoverFencesInlineAndPaths();
         CodeLikeWordsAreRecognized();
@@ -270,6 +272,53 @@ public static class SelfTest
         Equal(PromptStatus.Sent, store.PeekPrompt(file, "dddd")?.Status, "prune keeps sent prompts");
         Equal(PromptStatus.Queued, store.PeekPrompt(file, "eeee")?.Status, "prune keeps queued prompts");
         True(store.PeekPrompt(file, "cccc") is null, "prune drops stale drafts");
+    }
+
+    /// <summary>
+    /// Everything in state.json is keyed by relative path, so a rename that doesn't move the keys
+    /// loses which prompts were sent and orphans anything queued out of the file.
+    /// </summary>
+    private static void RenameCarriesFileState()
+    {
+        var store = new StateStore();
+        const string before = "CallTree/sms.md";
+        const string after = "CallTree/messaging.md";
+
+        store.ForFile(before).Mode = ParseMode.Modern;
+        store.Prompt(before, "aaaa").Status = PromptStatus.Sent;
+        store.State.Queue.Add(new QueueEntry { File = before, Hash = "bbbb" });
+        store.State.LastSession = before;
+
+        store.RenameFile(before, after);
+
+        Equal(PromptStatus.Sent, store.PeekPrompt(after, "aaaa")?.Status, "prompt status follows a rename");
+        Equal(ParseMode.Modern, store.PeekFileMode(after), "the parse mode follows a rename");
+        True(store.PeekFileMode(before) is null, "the old key is gone after a rename");
+        Equal(after, store.State.Queue[0].File, "queued prompts follow a rename");
+        Equal(after, store.State.LastSession, "the last-open session follows a rename");
+    }
+
+    private static void SessionNamesAreValidated()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), $"claudelog-selftest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(folder);
+        var taken = Path.Combine(folder, "taken.md");
+        File.WriteAllText(taken, "a prompt");
+
+        Equal("sms.md", LogTree.NormalizeSessionName("sms"), "a bare name becomes .md");
+        Equal("sms.txt", LogTree.NormalizeSessionName("sms.txt"), "an explicit .txt is kept");
+        Equal("sms.md", LogTree.NormalizeSessionName("  sms  "), "surrounding space is trimmed");
+        Equal("phase.2.md", LogTree.NormalizeSessionName("phase.2"), "a dot mid-name is name, not extension");
+
+        True(LogTree.ValidateSessionName("new_session", folder) is null, "a free name is accepted");
+        True(LogTree.ValidateSessionName("", folder) is not null, "an empty name is rejected");
+        True(LogTree.ValidateSessionName("   ", folder) is not null, "a blank name is rejected");
+        True(LogTree.ValidateSessionName("a/b", folder) is not null, "a path separator is rejected");
+        True(LogTree.ValidateSessionName(".md", folder) is not null, "a bare extension is rejected");
+        True(LogTree.ValidateSessionName("taken", folder) is not null, "an existing name is rejected");
+        True(LogTree.ValidateSessionName("taken", folder, taken) is null, "renaming a file to itself is fine");
+
+        Directory.Delete(folder, recursive: true);
     }
 
     // ------------------------------------------------- editing assistance

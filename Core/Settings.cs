@@ -27,6 +27,14 @@ public sealed class Settings
     public bool StageClipboardOnReset { get; set; } = true;
 
     /// <summary>
+    /// Show the manual reset-time entry under the countdown. Off by default: detection from Claude
+    /// Code's transcripts is reliable, so the override is the fallback for when it isn't, not
+    /// something to look at every day. The entry appears anyway while an override is actually set,
+    /// so a hidden one can always be cleared.
+    /// </summary>
+    public bool ShowManualReset { get; set; }
+
+    /// <summary>
     /// Log folder name → source folder, for "Open project source". Optional, and empty by default:
     /// the mapping isn't mechanical, and a downloaded binary shouldn't arrive pre-filled with
     /// paths from the machine it was written on.

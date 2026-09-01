@@ -136,6 +136,32 @@ public sealed class StateStore
         }
     }
 
+    /// <summary>
+    /// Carries a file's state across a rename. Everything here is keyed by relative path — the
+    /// per-prompt statuses, the queue entries and the last-open session — so without this a rename
+    /// silently loses which prompts had been sent and orphans anything queued from the file.
+    /// </summary>
+    public void RenameFile(string oldKey, string newKey)
+    {
+        if (string.Equals(oldKey, newKey, StringComparison.OrdinalIgnoreCase)) return;
+        lock (_gate)
+        {
+            if (State.Files.Remove(oldKey, out var file)) State.Files[newKey] = file;
+
+            foreach (var entry in State.Queue.Where(q =>
+                         string.Equals(q.File, oldKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                entry.File = newKey;
+            }
+
+            if (string.Equals(State.LastSession, oldKey, StringComparison.OrdinalIgnoreCase))
+            {
+                State.LastSession = newKey;
+            }
+        }
+        MarkDirty();
+    }
+
     /// <summary>Carries state across an edit that changed a prompt's hash.</summary>
     public void Rekey(string relativePath, string oldHash, string newHash)
     {

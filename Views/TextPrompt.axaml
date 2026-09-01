@@ -1,0 +1,26 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="ClaudeLog.Views.TextPrompt"
+        Title="ClaudeLog"
+        Width="440" SizeToContent="Height"
+        CanResize="False" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+
+  <StackPanel Margin="18" Spacing="10">
+    <TextBlock x:Name="Label" TextWrapping="Wrap" />
+
+    <TextBox x:Name="Input" FontFamily="Cascadia Mono,Consolas,Menlo,monospace" />
+
+    <!-- SystemErrorTextColor is a Color, not a Brush; this is the brush built from it, and the
+         only one of the two that a Foreground can actually use. -->
+    <TextBlock x:Name="Error" FontSize="11" TextWrapping="Wrap" IsVisible="False"
+               Foreground="{DynamicResource SystemControlErrorTextForegroundBrush}" />
+
+    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,4,0,0">
+      <Button x:Name="Ok" Content="OK" IsDefault="True" MinWidth="80"
+              HorizontalContentAlignment="Center" />
+      <Button x:Name="Cancel" Content="Cancel" IsCancel="True" MinWidth="80"
+              HorizontalContentAlignment="Center" />
+    </StackPanel>
+  </StackPanel>
+</Window>

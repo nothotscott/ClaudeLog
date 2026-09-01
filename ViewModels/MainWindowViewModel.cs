@@ -26,10 +26,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     public Action? FlashWindow { get; set; }
 
+    /// <summary>Asks for one line of text: title, label, initial value, how much of it to select,
+    /// and a validator that runs before the dialog will close. Null means cancelled.</summary>
+    public Func<string, string, string, int, Func<string, string?>, Task<string?>>? AskForText { get; set; }
+
     public MainWindowViewModel()
     {
         _settings = Settings.Load();
         _store = StateStore.Load();
+
+        // The field, not the property: going through the setter would write settings.json back on
+        // every launch just to store what it already said.
+        _showManualReset = _settings.ShowManualReset;
 
         _quota = new QuotaWatcher(_settings.ClaudeProjectsDir);
         _quota.Updated += _ => Dispatcher.UIThread.Post(UpdateReset);
@@ -110,6 +118,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                 Name = project.Name,
                 Path = project.Path,
                 Detail = $"{project.Sessions.Count}",
+                Owner = this,
             };
 
             foreach (var session in project.Sessions)
@@ -121,6 +130,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                     Path = session.Path,
                     Key = session.Key,
                     Detail = session.Modified.ToString("MMM d"),
+                    Owner = this,
                 });
             }
 
@@ -132,6 +142,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                     Name = folder.Name,
                     Path = folder.Path,
                     Detail = $"{folder.ItemCount}",
+                    Owner = this,
                 });
             }
 
@@ -194,7 +205,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     [NotifyPropertyChangedFor(nameof(ModeLabel))]
     private ParseMode _mode = ParseMode.Legacy;
 
-    public string ModeLabel => Mode == ParseMode.Modern ? "--- separators" : "blank-line (legacy)";
+    public string ModeLabel => Describe(Mode);
+
+    public static string Describe(ParseMode mode) =>
+        mode == ParseMode.Modern ? "--- separators" : "blank-line (legacy)";
 
     private void LoadSession(TreeNodeViewModel node)
     {
@@ -605,6 +619,26 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _hasReset;
     [ObservableProperty] private string _manualResetInput = string.Empty;
 
+    /// <summary>Whether the manual entry is wanted at all — a setting, toggled from the panel's menu.</summary>
+    [ObservableProperty] private bool _showManualReset;
+
+    /// <summary>Whether it's actually on screen: wanted, or currently holding an override.</summary>
+    [ObservableProperty] private bool _manualResetVisible;
+
+    partial void OnShowManualResetChanged(bool value)
+    {
+        _settings.ShowManualReset = value;
+        _settings.Save();
+        RefreshManualResetVisibility();
+    }
+
+    /// <summary>
+    /// Called every tick as well as on the toggle. An override set while the entry is hidden would
+    /// otherwise be unclearable — the countdown would say "Manual" with no way to take it back.
+    /// </summary>
+    private void RefreshManualResetVisibility() =>
+        ManualResetVisible = ShowManualReset || _store.State.ManualResetAt is not null;
+
     /// <summary>
     /// The manual override wins over what was detected. It deliberately stays effective for the
     /// moment after it passes: the countdown crossing zero is what fires the reset, so dropping
@@ -631,6 +665,8 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void UpdateReset()
     {
+        RefreshManualResetVisibility();
+
         var reset = EffectiveReset;
         if (reset is null)
         {
@@ -727,13 +763,123 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         return result;
     }
 
-    // ------------------------------------------------------------ commands
+    // ------------------------------------------------------- session files
 
-    [RelayCommand]
-    private void ConvertToModern()
+    /// <summary>
+    /// Makes a tree node the open session, so the commands below can act on "the open file".
+    /// Right-clicking a TreeViewItem doesn't select it, so a context-menu command can arrive for a
+    /// file that isn't open — opening it first is both correct and what you'd expect to see happen.
+    /// </summary>
+    private bool Open(TreeNodeViewModel node)
     {
-        if (_doc is null || CurrentKey is null) return;
-        if (_doc.Mode == ParseMode.Modern)
+        if (node.Kind != NodeKind.Session) return false;
+        if (!string.Equals(node.Key, CurrentKey, StringComparison.OrdinalIgnoreCase)) SelectedNode = node;
+        return _doc is not null && CurrentKey is not null;
+    }
+
+    private TreeNodeViewModel? ProjectOf(TreeNodeViewModel node) =>
+        node.Kind == NodeKind.Project ? node : Tree.FirstOrDefault(p => p.Children.Contains(node));
+
+    private void SelectByPath(string path) =>
+        SelectedNode = Tree.SelectMany(p => p.Children)
+            .FirstOrDefault(c => c.Kind == NodeKind.Session &&
+                                 string.Equals(c.Path, path, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Creates an empty session file in a project and leaves you in the editor.</summary>
+    public async Task NewSessionIn(TreeNodeViewModel node)
+    {
+        var project = ProjectOf(node);
+        if (project is null || AskForText is null) return;
+
+        var name = await AskForText("New session", $"Name of the new session file in {project.Name}:",
+            string.Empty, 0, typed => LogTree.ValidateSessionName(typed, project.Path));
+        if (name is null) return;
+
+        var path = Path.Combine(project.Path, LogTree.NormalizeSessionName(name));
+
+        try
+        {
+            SaveEditorIfDirty();
+            SessionDocument.CreateEmpty(path, _settings.NewFileMode).Save();
+
+            // An empty file looks like neither mode, so LoadSession would guess Legacy and quietly
+            // ignore NewFileMode. Record the intended mode before the file is ever opened.
+            _store.ForFile(Paths.RelativeKey(_settings.LogRoot, path)).Mode = _settings.NewFileMode;
+            _store.MarkDirty();
+
+            RefreshTree();
+            SelectByPath(path);
+            Status = $"Created {Path.GetFileName(path)}";
+            NewPrompt();
+        }
+        catch (Exception ex)
+        {
+            Status = $"Could not create {Path.GetFileName(path)}: {ex.Message}";
+            Log.Warn($"new session {path}: {ex}");
+        }
+    }
+
+    /// <summary>Renames a session file on disk, carrying its state with it.</summary>
+    public async Task RenameSession(TreeNodeViewModel node)
+    {
+        if (node is not { Kind: NodeKind.Session, Key: not null } || AskForText is null) return;
+        if (Path.GetDirectoryName(node.Path) is not { } folder) return;
+
+        var name = await AskForText("Rename session", "New name for this session file:", node.Name,
+            Path.GetFileNameWithoutExtension(node.Name).Length,
+            typed => LogTree.ValidateSessionName(typed, folder, node.Path));
+        if (name is null) return;
+
+        var target = Path.Combine(folder, LogTree.NormalizeSessionName(name));
+        if (string.Equals(target, node.Path, StringComparison.OrdinalIgnoreCase)) return;
+
+        var wasOpen = string.Equals(node.Key, CurrentKey, StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            if (wasOpen) SaveEditorIfDirty();
+
+            File.Move(node.Path, target);
+            _store.RenameFile(node.Key, Paths.RelativeKey(_settings.LogRoot, target));
+            _store.Save();
+
+            RefreshTree();
+            if (wasOpen) SelectByPath(target);
+            Status = $"Renamed to {Path.GetFileName(target)}";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Rename failed: {ex.Message}";
+            Log.Warn($"rename {node.Path}: {ex}");
+        }
+    }
+
+    /// <summary>Changes how a file is split, without touching the file.</summary>
+    public void SetMode(TreeNodeViewModel node, ParseMode mode)
+    {
+        if (!Open(node) || CurrentKey is null) return;
+        if (_doc!.Mode == mode)
+        {
+            Status = $"Already reading this file with {Describe(mode)}";
+            return;
+        }
+
+        SaveEditorIfDirty();
+
+        Mode = mode;
+        _doc.SetMode(mode);
+        _store.ForFile(CurrentKey).Mode = mode;
+        _store.MarkDirty();
+        ReloadPrompts();
+        SelectPromptAt(0);
+        Status = $"Reading this file with {Describe(mode)}";
+    }
+
+    /// <summary>Rewrites a legacy file with explicit `---` separators. Snapshotted first.</summary>
+    public void ConvertToModern(TreeNodeViewModel node)
+    {
+        if (!Open(node) || CurrentKey is null) return;
+        if (_doc!.Mode == ParseMode.Modern)
         {
             Status = "Already using --- separators";
             return;
@@ -758,21 +904,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         }
     }
 
-    /// <summary>Flips how the open file is split, without touching the file.</summary>
-    [RelayCommand]
-    private void ToggleMode()
-    {
-        if (_doc is null || CurrentKey is null) return;
-        SaveEditorIfDirty();
-
-        Mode = _doc.Mode == ParseMode.Legacy ? ParseMode.Modern : ParseMode.Legacy;
-        _doc.SetMode(Mode);
-        _store.ForFile(CurrentKey).Mode = Mode;
-        _store.MarkDirty();
-        ReloadPrompts();
-        SelectPromptAt(0);
-        Status = $"Reading this file with {ModeLabel}";
-    }
+    // ------------------------------------------------------------ commands
 
     [RelayCommand]
     private void MergeWithNext(PromptViewModel? prompt)

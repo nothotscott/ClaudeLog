@@ -46,10 +46,12 @@ internal static class Program
         try
         {
             BuildAvaloniaApp().SetupWithoutStarting();
-            var window = new Views.MainWindow();
 
-            Console.WriteLine($"ok  platform started, {window.GetType().Name} loaded " +
-                              $"({window.Width:0}x{window.Height:0})");
+            var window = new Views.MainWindow();
+            var dialog = new Views.TextPrompt();
+
+            Console.WriteLine($"ok  platform started, {window.GetType().Name} " +
+                              $"({window.Width:0}x{window.Height:0}) and {dialog.GetType().Name} loaded");
             return 0;
         }
         catch (Exception ex)

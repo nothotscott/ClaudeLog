@@ -35,6 +35,42 @@ public static class LogTree
     public static bool IsSessionFile(string path) =>
         SessionExtensions.Contains(System.IO.Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// What the user typed, as a session file name. Anything that isn't already `.md` or `.txt`
+    /// gets `.md` — that's what almost every file in the tree is, and typing the extension every
+    /// time would be friction for nothing. A dot in the middle is just part of the name, so
+    /// `phase.2` becomes `phase.2.md` rather than being rejected for an unknown extension.
+    /// </summary>
+    public static string NormalizeSessionName(string typed)
+    {
+        typed = typed.Trim();
+        if (typed.Length == 0) return typed;
+        return IsSessionFile(typed) ? typed : typed + ".md";
+    }
+
+    /// <summary>
+    /// Why this name can't be used, or null if it can. Checked before the dialog closes, so the
+    /// answer has to be a sentence rather than an exception.
+    /// </summary>
+    public static string? ValidateSessionName(string typed, string folder, string? replacing = null)
+    {
+        var name = NormalizeSessionName(typed);
+
+        if (name.Length == 0) return "Enter a file name.";
+        if (name.AsSpan().IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) >= 0)
+        {
+            return @"A file name can't contain \ / : * ? "" < > |";
+        }
+
+        if (System.IO.Path.GetFileNameWithoutExtension(name).Length == 0) return "Enter a file name.";
+
+        var target = System.IO.Path.Combine(folder, name);
+        if (string.Equals(target, replacing, StringComparison.OrdinalIgnoreCase)) return null;
+        if (File.Exists(target) || Directory.Exists(target)) return $"{name} already exists here.";
+
+        return null;
+    }
+
     public static List<LogProject> Scan(string root)
     {
         var projects = new List<LogProject>();

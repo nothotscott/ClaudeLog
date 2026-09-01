@@ -46,12 +46,11 @@ dotnet run -- --state             # where settings and state live
 dotnet run -- --startup           # boot Avalonia and load MainWindow without showing it, then exit
 ```
 
-There is no test project. **`--selftest` is the regression net** — 67 checks over prompt splitting,
-byte-exact saving, the quota record format, the state-store invariants, tree ordering, the
-highlighting rules and the spelling filters (including a real round-trip through the Windows spell
-checker). Add to `SelfTest.cs` when changing any of those; it
-is far more useful than it looks, and it is how the parser rules below were validated against the
-real corpus.
+There is no test project. **`--selftest` is the regression net** — 83 checks over prompt splitting,
+byte-exact saving, the quota record format, the state-store invariants, tree ordering and naming,
+the highlighting rules and the spelling filters (including a real round-trip through the Windows
+spell checker). Add to `SelfTest.cs` when changing any of those; it is far more useful than it
+looks, and it is how the parser rules below were validated against the real corpus.
 
 `--parse` against a real file is the fastest way to see whether a parsing change helped or hurt.
 Useful reference points, all with the current rules:
@@ -170,6 +169,11 @@ leaves the manual override in charge; nothing here ever writes under `.claude`. 
 changes, `SelfTest.QuotaReadsARejectedRecord` is what fails — it builds a synthetic transcript in
 the observed shape.
 
+Detection is good enough in practice that **the manual entry is hidden by default**
+(`Settings.ShowManualReset`, toggled from the countdown panel's own context menu). It reappears on
+its own whenever an override is actually set — otherwise an override entered and then hidden would
+be unclearable, with the countdown reading "Manual" and no way to take it back.
+
 **The expiry trap** (already fixed once, don't reintroduce): the countdown crossing zero is what
 fires the reset, so `EffectiveReset` must keep returning the manual override for the moment *after*
 it passes. Dropping an expired override from that property makes the reset silently never fire —
@@ -260,10 +264,40 @@ reaching for a `TopLevel`.
 | `Views\Editing\SquiggleRenderer.cs` | Wavy underlines for spelling errors, visible lines only. |
 | `Core\Cli.cs`, `SelfTest.cs` | Headless commands; attaches to the parent console since this is a WinExe. |
 | `ViewModels\MainWindowViewModel.cs` | Tree, session, editor, copy/queue, countdown, reset handling. |
-| `Views\MainWindow.axaml` | The three panes, prompt cards, queue, keybindings. |
+| `Views\MainWindow.axaml` | The three panes, prompt cards, queue, keybindings, the tree's context menu. |
+| `Views\TextPrompt.axaml` | The one-line input dialog — Avalonia has none — used to name and rename files. |
 
 Editing writes back by **splicing the prompt's line range into the original text**, never by
 re-serializing the whole file — that's what keeps every hand-placed separator and blank line intact.
+
+## The tree's context menu
+
+Creating, renaming and re-splitting a file all live on the tree's right-click menu, and the header
+keeps only **New prompt** — the split-mode and convert buttons that used to sit there come up once
+in the life of a file, not once a session.
+
+Three things about it are load-bearing:
+
+- **The commands are on `TreeNodeViewModel`, not on the window's view model.** A ContextMenu is its
+  own popup tree, so a binding inside one cannot walk up to the TreeView and reach the window's
+  DataContext — the node is the only thing in scope. `TreeNodeViewModel.Owner` forwards to the real
+  implementations. Bindings there are compile-checked (`x:DataType` on the style), so a renamed
+  command is a build error rather than a menu item that silently does nothing.
+- **Right-clicking a TreeViewItem does not select it**, so a command can arrive for a file that
+  isn't open. `MainWindowViewModel.Open(node)` opens it first; everything that edits "the open file"
+  goes through it.
+- **A rename has to move state as well as bytes.** Everything in state.json is keyed by relative
+  path — prompt statuses, queue entries, `LastSession` — so `StateStore.RenameFile` moves all three.
+  `SelfTest.RenameCarriesFileState` pins it.
+
+A new file is created empty, which looks like neither parse mode, so `NewSessionIn` records
+`Settings.NewFileMode` in the store *before* the file is first opened — otherwise `LoadSession`
+guesses Legacy and the setting is silently ignored.
+
+`LogTree.NormalizeSessionName` appends `.md` to anything that isn't already `.md`/`.txt`, so a dot
+mid-name (`phase.2`) is part of the name rather than an unknown extension to reject.
+`ValidateSessionName` runs before the dialog closes, so bad names are refused in the dialog instead
+of being explained in the status bar afterwards.
 
 ## Releases
 

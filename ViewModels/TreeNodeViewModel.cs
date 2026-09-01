@@ -26,8 +26,18 @@ public sealed partial class TreeNodeViewModel : ViewModelBase
 
     [ObservableProperty] private bool _isExpanded = true;
 
+    /// <summary>
+    /// The window this node belongs to. A ContextMenu lives in its own popup tree, so a binding
+    /// inside one can't walk up to the TreeView and reach the main view model — the node itself is
+    /// the only thing in scope. These commands exist to forward from there.
+    /// </summary>
+    public MainWindowViewModel? Owner { get; init; }
+
     public bool IsSession => Kind == NodeKind.Session;
     public bool IsFolder => Kind == NodeKind.Folder;
+
+    /// <summary>New sessions belong to a project, so both a project and its files offer it.</summary>
+    public bool CanAddSession => Kind is NodeKind.Project or NodeKind.Session;
     public string Icon => Kind switch
     {
         NodeKind.Project => "\U0001F4C1",
@@ -46,4 +56,19 @@ public sealed partial class TreeNodeViewModel : ViewModelBase
         if (Kind == NodeKind.Session) Shell.RevealFile(Path);
         else Shell.OpenFolder(Path);
     }
+
+    [RelayCommand]
+    private Task NewSession() => Owner?.NewSessionIn(this) ?? Task.CompletedTask;
+
+    [RelayCommand]
+    private Task RenameSession() => Owner?.RenameSession(this) ?? Task.CompletedTask;
+
+    [RelayCommand]
+    private void UseLegacyMode() => Owner?.SetMode(this, ParseMode.Legacy);
+
+    [RelayCommand]
+    private void UseModernMode() => Owner?.SetMode(this, ParseMode.Modern);
+
+    [RelayCommand]
+    private void ConvertToModern() => Owner?.ConvertToModern(this);
 }

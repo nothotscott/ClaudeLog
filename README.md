@@ -21,9 +21,12 @@ them. Same folders, same files, same plain markdown.
 - **A queue for when the session limit hits.** Queue the prompts you couldn't send; ClaudeLog
   reads the reset time out of Claude Code's own transcripts, counts down, and when the limit
   resets it toasts you, flashes the taskbar and puts the next queued prompt on the clipboard.
-  It never types into your terminal — the paste stays yours.
+  It never types into your terminal — the paste stays yours. If detection ever comes up empty,
+  right-click the countdown for **Set the reset time manually**.
 - **Explorer shortcuts** for the project folder and its attachment folders (`Examples`, `Plans`),
   from the tree or the session header.
+- **File management in the tree.** Right-click a project to add a session, a session to rename it or
+  change how it's split. A new name without an extension gets `.md`.
 
 ## Writing
 
@@ -55,8 +58,9 @@ Two ways a file can be split, per file:
   ending in a colon stay with the prompt above them, and a prompt containing markdown headings
   ends only at a double blank line.
 
-A file that already contains `---` opens in `---` mode automatically. **Convert to `---`** rewrites
-a legacy file with explicit separators once its boundaries look right.
+A file that already contains `---` opens in `---` mode automatically. Both are on the file's
+right-click menu in the tree, along with **Convert file to `---` separators**, which rewrites a
+legacy file with explicit separators once its boundaries look right.
 
 ## Keys
 

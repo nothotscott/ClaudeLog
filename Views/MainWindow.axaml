@@ -67,10 +67,27 @@
         <TreeView.Styles>
           <Style Selector="TreeViewItem" x:DataType="vm:TreeNodeViewModel">
             <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <!-- Everything file-level lives here. A ContextMenu is its own popup tree, so these
+                 bind to commands on the node itself — nothing inside can reach the window's view
+                 model by walking up the visual tree. -->
             <Setter Property="ContextMenu">
               <Template>
                 <ContextMenu>
+                  <MenuItem Header="New session…" Command="{Binding NewSessionCommand}"
+                            IsVisible="{Binding CanAddSession}" />
+                  <MenuItem Header="Rename…" Command="{Binding RenameSessionCommand}"
+                            IsVisible="{Binding IsSession}" />
+                  <Separator IsVisible="{Binding CanAddSession}" />
+
                   <MenuItem Header="Open in Explorer" Command="{Binding OpenInExplorerCommand}" />
+
+                  <Separator IsVisible="{Binding IsSession}" />
+                  <MenuItem Header="Split on blank lines (legacy)" IsVisible="{Binding IsSession}"
+                            Command="{Binding UseLegacyModeCommand}" />
+                  <MenuItem Header="Split on --- separators" IsVisible="{Binding IsSession}"
+                            Command="{Binding UseModernModeCommand}" />
+                  <MenuItem Header="Convert file to --- separators" IsVisible="{Binding IsSession}"
+                            Command="{Binding ConvertToModernCommand}" />
                 </ContextMenu>
               </Template>
             </Setter>
@@ -93,12 +110,10 @@
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
                         IsVisible="{Binding HasSession}">
+              <!-- Splitting and converting moved to the file's context menu in the tree: they are
+                   per-file, and they come up once in the life of a file, not once a session. -->
               <Button Content="New prompt" Command="{Binding NewPromptCommand}"
                       ToolTip.Tip="Ctrl+N" />
-              <Button Content="{Binding ModeLabel}" Command="{Binding ToggleModeCommand}"
-                      ToolTip.Tip="Switch how this file is split into prompts" />
-              <Button Content="Convert to ---" Command="{Binding ConvertToModernCommand}"
-                      ToolTip.Tip="Rewrite this file with explicit --- separators" />
             </StackPanel>
           </Grid>
 
@@ -236,11 +251,21 @@
 
         <Border Grid.Row="0" Padding="12" CornerRadius="6" BorderThickness="1"
                 BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+          <Border.ContextMenu>
+            <ContextMenu>
+              <MenuItem Header="Set the reset time manually" ToggleType="CheckBox"
+                        IsChecked="{Binding ShowManualReset, Mode=TwoWay}" />
+            </ContextMenu>
+          </Border.ContextMenu>
+
           <StackPanel Spacing="4">
             <TextBlock Text="SESSION LIMIT" Classes="h" />
             <TextBlock Text="{Binding CountdownText}" FontSize="22" FontWeight="SemiBold" />
             <TextBlock Text="{Binding ResetDetail}" Classes="dim" FontSize="11" TextWrapping="Wrap" />
-            <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0">
+
+            <!-- Hidden unless asked for, or unless an override is set — see ManualResetVisible. -->
+            <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0"
+                  IsVisible="{Binding ManualResetVisible}">
               <TextBox Grid.Column="0" Text="{Binding ManualResetInput}" PlaceholderText="9pm"
                        FontSize="11" Height="26" Padding="6,2" />
               <Button Grid.Column="1" Content="Set" FontSize="11" Padding="8,2" Margin="4,0,0,0"
