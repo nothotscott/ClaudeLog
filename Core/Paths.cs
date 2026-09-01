@@ -33,6 +33,13 @@ public static class Paths
     public static string DefaultClaudeProjectsDir { get; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", "projects");
 
+    /// <summary>
+    /// Claude Code's own OAuth credentials, read-only — see <see cref="UsageWatcher"/>. Never
+    /// written by this app.
+    /// </summary>
+    public static string DefaultClaudeCredentialsFile { get; } = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", ".credentials.json");
+
     public static void EnsureAppDataDir() => Directory.CreateDirectory(AppDataDir);
 
     /// <summary>Forward-slashed path relative to the log root — the key used in state.json.</summary>

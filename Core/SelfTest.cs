@@ -29,6 +29,8 @@ public static class SelfTest
         ConvertToModernKeepsPromptCount();
         QuotaReadsARejectedRecord();
         QuotaIgnoresPastAndMalformedRecords();
+        UsageParsesASessionAndWeeklyResponse();
+        UsageIgnoresNullWindowsAndMalformedResponses();
         StateSurvivesAnEditAndAReparse();
         RenameCarriesFileState();
         SlugMatchesClaudeCodesProjectFolders();
@@ -247,6 +249,39 @@ public static class SelfTest
         {
             Directory.Delete(dir, true);
         }
+    }
+
+    // --------------------------------------------------------------- usage
+
+    /// <summary>
+    /// Copied from a real call to GET /api/oauth/usage: utilization is a 0-100 percentage, not a
+    /// fraction, and resets_at is an ISO-8601 string, not unix seconds like QuotaWatcher's field.
+    /// If Anthropic ever reshapes this undocumented endpoint, this is what fails.
+    /// </summary>
+    private static void UsageParsesASessionAndWeeklyResponse()
+    {
+        const string json = """
+            {"five_hour":{"utilization":50.0,"resets_at":"2026-09-01T22:49:59.570946+00:00","limit_dollars":null},
+             "seven_day":{"utilization":5.0,"resets_at":"2026-09-08T12:59:59.570969+00:00","limit_dollars":null},
+             "seven_day_opus":null,"seven_day_sonnet":null}
+            """;
+
+        var snapshot = UsageWatcher.Parse(json);
+
+        True(snapshot is not null, "a normal response parses");
+        Equal(50.0, snapshot?.SessionPercent ?? -1, "five_hour.utilization is the session percentage");
+        Equal(5.0, snapshot?.WeeklyPercent ?? -1, "seven_day.utilization is the weekly percentage");
+        True(snapshot?.SessionResetsAt.Year == 2026, "resets_at parses as a date, not unix seconds");
+    }
+
+    private static void UsageIgnoresNullWindowsAndMalformedResponses()
+    {
+        True(UsageWatcher.Parse("""{"five_hour":null,"seven_day":{"utilization":5.0,"resets_at":"2026-09-08T12:59:59Z"}}""")
+            is null, "no session window at all means no usage to show, even with a weekly one present");
+
+        var noWeekly = UsageWatcher.Parse("""{"five_hour":{"utilization":12.0,"resets_at":"2026-09-01T22:49:59Z"},"seven_day":null}""");
+        True(noWeekly is not null, "a missing weekly window doesn't block the session percentage");
+        True(noWeekly?.WeeklyPercent is null, "weekly stays absent rather than defaulting to 0");
     }
 
     // ------------------------------------------------------------ terminal

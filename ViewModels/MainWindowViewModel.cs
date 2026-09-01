@@ -11,6 +11,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     private readonly Settings _settings;
     private readonly StateStore _store;
     private readonly QuotaWatcher _quota;
+    private readonly UsageWatcher _usage;
     private readonly DispatcherTimer _timer;
     private TreeWatcher? _treeWatcher;
 
@@ -39,8 +40,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         // every launch just to store what it already said.
         _showManualReset = _settings.ShowManualReset;
 
+        _usage = new UsageWatcher(_settings.ClaudeCredentialsFile);
+        _usage.Updated += _ => Dispatcher.UIThread.Post(UpdateReset);
+        _usage.Start();
+
         _quota = new QuotaWatcher(_settings.ClaudeProjectsDir);
-        _quota.Updated += _ => Dispatcher.UIThread.Post(UpdateReset);
+        _quota.Updated += _ =>
+        {
+            Dispatcher.UIThread.Post(UpdateReset);
+            _usage.Refresh(); // a fresh rejection is exactly when the percentage has likely moved
+        };
         _quota.Start();
 
         _timer = new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, OnTick);
@@ -970,6 +979,15 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _hasReset;
     [ObservableProperty] private string _manualResetInput = string.Empty;
 
+    /// <summary>Live percentage of the five-hour session limit, from UsageWatcher. Absent (not
+    /// zero) whenever the usage endpoint hasn't answered yet — expired token, no network, first
+    /// launch — so the bar hides instead of claiming "0% used".</summary>
+    [ObservableProperty] private bool _hasSessionUsage;
+    [ObservableProperty] private double _sessionUsagePercent;
+    [ObservableProperty] private bool _hasWeeklyUsage;
+    [ObservableProperty] private double _weeklyUsagePercent;
+    [ObservableProperty] private string _weeklyUsageDetail = "";
+
     /// <summary>Whether the manual entry is wanted at all — a setting, toggled from the panel's menu.</summary>
     [ObservableProperty] private bool _showManualReset;
 
@@ -1026,15 +1044,25 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     private void UpdateReset()
     {
         RefreshManualResetVisibility();
+        UpdateUsage();
 
         var reset = EffectiveReset;
         if (reset is null)
         {
             HasReset = false;
-            CountdownText = "No limit pending";
-            ResetDetail = _quota.Latest is null
-                ? "Watching Claude Code transcripts"
-                : $"Last seen {_quota.Latest.RateLimitType} limit, already reset";
+            if (HasSessionUsage)
+            {
+                CountdownText = $"{SessionUsagePercent:0}% used";
+                ResetDetail = $"session limit · resets {_usage.Latest!.SessionResetsAt.LocalDateTime:ddd HH:mm}";
+            }
+            else
+            {
+                CountdownText = "No limit pending";
+                ResetDetail = _quota.Latest is null
+                    ? "Watching Claude Code transcripts"
+                    : $"Last seen {_quota.Latest.RateLimitType} limit, already reset";
+            }
+
             _lastRemaining = null;
             return;
         }
@@ -1051,6 +1079,32 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
         if (_lastRemaining > TimeSpan.Zero && remaining <= TimeSpan.Zero) OnResetReached();
         _lastRemaining = remaining;
+    }
+
+    /// <summary>
+    /// Separate from the countdown above: the percentage moves on its own five-minute poll, not on
+    /// the once-a-second tick, so this just copies whatever UsageWatcher currently has rather than
+    /// fetching anything itself.
+    /// </summary>
+    private void UpdateUsage()
+    {
+        var usage = _usage.Latest;
+        HasSessionUsage = usage is not null;
+        SessionUsagePercent = usage is null ? 0 : Math.Clamp(usage.SessionPercent, 0, 100);
+
+        HasWeeklyUsage = usage?.WeeklyPercent is not null;
+        if (usage?.WeeklyPercent is { } weeklyPercent)
+        {
+            WeeklyUsagePercent = Math.Clamp(weeklyPercent, 0, 100);
+            WeeklyUsageDetail = usage.WeeklyResetsAt is { } weeklyResets
+                ? $"{WeeklyUsagePercent:0}% of weekly limit · resets {weeklyResets.LocalDateTime:ddd HH:mm}"
+                : $"{WeeklyUsagePercent:0}% of weekly limit";
+        }
+        else
+        {
+            WeeklyUsagePercent = 0;
+            WeeklyUsageDetail = "";
+        }
     }
 
     private async void OnResetReached()
@@ -1351,6 +1405,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     {
         _timer.Stop();
         _quota.Dispose();
+        _usage.Dispose();
         _treeWatcher?.Dispose();
     }
 }

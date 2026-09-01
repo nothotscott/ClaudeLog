@@ -13,6 +13,11 @@ public sealed class Settings
 
     public string ClaudeProjectsDir { get; set; } = Paths.DefaultClaudeProjectsDir;
 
+    /// <summary>Claude Code's OAuth credentials file, for <see cref="UsageWatcher"/>. Overridable
+    /// the same way <see cref="ClaudeProjectsDir"/> is, so a throwaway instance can point at a
+    /// fake one instead of the real login.</summary>
+    public string ClaudeCredentialsFile { get; set; } = Paths.DefaultClaudeCredentialsFile;
+
     /// <summary>Mode for files the app creates. Existing files default to Legacy — see StateStore.</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public ParseMode NewFileMode { get; set; } = ParseMode.Modern;

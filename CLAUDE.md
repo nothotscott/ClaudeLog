@@ -7,6 +7,10 @@ contracts, and the decisions that are easy to regress. Most of the constraints h
 that lives outside this repo — read the two "external" sections before changing anything that reads
 or writes files.
 
+Deeper write-ups for specific subsystems live under `skills/<Name>/SKILL.md` — this file links to
+them from the relevant section rather than inlining everything. Read the linked skill before
+changing the area it covers; this file stays the map, not the territory.
+
 ## Project Purpose
 
 ClaudeLog streamlines the way Scott uses Claude Code on Windows.
@@ -43,6 +47,7 @@ dotnet run -- --spell <file>      # what the spell checker would flag in a file,
 dotnet run -- --tree              # projects, sessions, prompt counts, parse mode per file
 dotnet run -- --parse <file>      # prompt boundaries, hashes and statuses (--legacy / --modern)
 dotnet run -- --quota             # the detected session-limit reset
+dotnet run -- --usage             # the live session/weekly usage percentage
 dotnet run -- --state             # where settings and state live
 dotnet run -- --terminal          # each file's Claude session: directory, pid, last prompt
 dotnet run -- --terminal --start <dir>   # open one there; prints session id and pid
@@ -165,37 +170,21 @@ Deleting a prompt and converting a file both rewrite it with no undo, in a folde
 control, so `Backups.Snapshot` copies the file into `%LOCALAPPDATA%\ClaudeLog\backups\` first
 (10 kept per file). Ordinary edits aren't snapshotted — that's just typing.
 
-## Detecting the session limit
+## Detecting the session limit, and showing live usage
 
-Claude Code records the reset time in its own transcripts. A rejected request leaves this in
-`%USERPROFILE%\.claude\projects\<cwd-slug>\<session>.jsonl`:
+Two independent, best-effort watchers feed the SESSION LIMIT panel, neither ever writing anything
+under `.claude`: **`QuotaWatcher`** reads the reset time out of Claude Code's own transcripts — it
+only has data *after* a rejection has actually happened, from an undocumented `quotaLimits` field
+recorded on the rejected request. **`UsageWatcher`** fills in the percentage leading up to that, by
+polling the same undocumented usage endpoint Claude Code's own status line and the Desktop app call
+— continuously, whether or not anything's been rejected. `MainWindowViewModel` shows both: the
+headline is the `Xh Ym Zs` countdown while actually blocked, `{percent}% used` otherwise; the
+progress bars stay visible in both states.
 
-```json
-"quotaLimits": { "status": "rejected", "resetsAt": 1788138000,
-                 "rateLimitType": "five_hour", "overageStatus": "rejected" }
-```
-
-`resetsAt` is unix seconds. `QuotaWatcher` scans the whole `projects` tree, not one slug — the slug
-comes from the directory Claude Code was launched in (`D--Source` for `D:\Source`) and Scott launches
-from several. It reads only the last 2 MB of each of the 40 most recently written transcripts, with
-`FileShare.ReadWrite | Delete` because Claude Code is appending to them live, and takes the newest
-future `resetsAt` among rejected records.
-
-**This is an undocumented internal format.** Every failure path degrades to "no reset detected" and
-leaves the manual override in charge; nothing here ever writes under `.claude`. If the format
-changes, `SelfTest.QuotaReadsARejectedRecord` is what fails — it builds a synthetic transcript in
-the observed shape.
-
-Detection is good enough in practice that **the manual entry is hidden by default**
-(`Settings.ShowManualReset`, toggled from the countdown panel's own context menu). It reappears on
-its own whenever an override is actually set — otherwise an override entered and then hidden would
-be unclearable, with the countdown reading "Manual" and no way to take it back.
-
-**The expiry trap** (already fixed once, don't reintroduce): the countdown crossing zero is what
-fires the reset, so `EffectiveReset` must keep returning the manual override for the moment *after*
-it passes. Dropping an expired override from that property makes the reset silently never fire —
-the countdown just goes back to "No limit pending" and the queue sits there. `OnResetReached` clears
-the override; the constructor clears one left stale by a previous run.
+Full detail — the exact transcript/JSON shapes, the expiry trap in `EffectiveReset`, how the
+`/api/oauth/usage` endpoint was reverse-engineered and how to redo that if it moves, and why nothing
+here refreshes the OAuth token itself — is in **`skills/SessionIntegration/SKILL.md`**. Read that
+before changing either watcher; this paragraph is only the map.
 
 ## Sending prompts to a terminal
 
@@ -337,7 +326,8 @@ reaching for a `TopLevel`.
 | `Core\LogTree.cs` | Scans projects/sessions/attachment folders, sessions newest-first; `TreeWatcher` debounces external changes. |
 | `Core\MarkdownScanner.cs` | The markdown highlighting rules, as spans over a line. Shared by both renderers. |
 | `Core\StateStore.cs` | `state.json` — per-prompt status, per-file mode, queue, manual reset, last session. |
-| `Core\QuotaWatcher.cs` | Tails Claude Code transcripts for `quotaLimits.resetsAt`. Best-effort by design. |
+| `Core\QuotaWatcher.cs` | Tails Claude Code transcripts for `quotaLimits.resetsAt`. Best-effort by design — see `skills/SessionIntegration/SKILL.md`. |
+| `Core\UsageWatcher.cs` | Polls Anthropic's usage endpoint for the live session/weekly percentage. Same skill, same best-effort rule. |
 | `Core\ConsoleInput.cs` | `WriteConsoleInput` into another process's console: bracketed paste, then Enter. |
 | `Core\ClaudeTerminal.cs` | Starts Claude Code in a terminal; session ids, project slugs, PID discovery. |
 | `Core\SessionTranscript.cs` | Reads back the session's own transcript to confirm a prompt landed. |

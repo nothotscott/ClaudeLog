@@ -10,7 +10,7 @@ namespace ClaudeLog.Core;
 public static class Cli
 {
     private static readonly string[] Commands =
-        ["--parse", "--tree", "--quota", "--state", "--spell", "--selftest", "--startup",
+        ["--parse", "--tree", "--quota", "--usage", "--state", "--spell", "--selftest", "--startup",
          "--terminal", "--send", "--help", "-h", "/?"];
 
     public static bool IsHeadless(string[] args) => args.Any(a => Commands.Contains(a, StringComparer.OrdinalIgnoreCase));
@@ -27,6 +27,7 @@ public static class Cli
                 "--parse" => Parse(args, settings),
                 "--tree" => Tree(settings),
                 "--quota" => Quota(settings),
+                "--usage" => Usage(settings),
                 "--state" => State(),
                 "--selftest" => SelfTest.Run(),
                 "--spell" => Spell(args, settings),
@@ -52,6 +53,7 @@ public static class Cli
               ClaudeLog --parse <file>        show how a session file splits into prompts
                         [--legacy|--modern]   force a parse mode instead of the stored one
               ClaudeLog --quota               show the detected session-limit reset
+              ClaudeLog --usage               show the live session/weekly usage percentage
               ClaudeLog --state               show where state and settings live
               ClaudeLog --spell <file>        words the spell checker would flag in a file
               ClaudeLog --terminal            per-session Claude Code sessions and their terminals
@@ -327,6 +329,34 @@ public static class Cli
 
         var manual = StateStore.Load().State.ManualResetAt;
         if (manual is not null) Console.WriteLine($"  manual    {manual.Value.LocalDateTime:yyyy-MM-dd HH:mm}");
+        return 0;
+    }
+
+    private static int Usage(Settings settings)
+    {
+        Console.WriteLine($"credentials: {settings.ClaudeCredentialsFile}");
+        if (!File.Exists(settings.ClaudeCredentialsFile))
+        {
+            Console.WriteLine("  not found — usage percentage unavailable, quota detection still works");
+            return 0;
+        }
+
+        using var watcher = new UsageWatcher(settings.ClaudeCredentialsFile);
+        var snapshot = watcher.FetchNowAsync().GetAwaiter().GetResult();
+
+        if (snapshot is null)
+        {
+            Console.WriteLine("  no usage data — token missing/expired, or the request failed (see claudelog.log)");
+            return 0;
+        }
+
+        Console.WriteLine($"  session   {snapshot.SessionPercent:0}% · resets {snapshot.SessionResetsAt.LocalDateTime:yyyy-MM-dd HH:mm}");
+        if (snapshot.WeeklyPercent is { } weekly)
+        {
+            var resets = snapshot.WeeklyResetsAt is { } r ? r.LocalDateTime.ToString("yyyy-MM-dd HH:mm") : "?";
+            Console.WriteLine($"  weekly    {weekly:0}% · resets {resets}");
+        }
+
         return 0;
     }
 

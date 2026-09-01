@@ -1,10 +1,14 @@
 # ClaudeLog
 
-A prompt editor for the way I actually use Claude Code: write the prompt in markdown, send it
-straight to a Claude Code session — and keep a log of every prompt, organized by project.
+A markdown prompt editor for Claude Code on Windows. Write a prompt like you'd write anything else
+worth thinking about first, send it with one click into a real Claude Code session, and keep a log
+of everything you've sent — organized by project, readable as plain markdown even with the app
+closed.
 
-It replaces Notepad++ for the files under `C:\Users\Scott\Documents\ClaudeLog`, without changing
-them. Same folders, same files, same plain markdown.
+If you've ever drafted a prompt in a text editor because a terminal isn't where you want to
+compose, then copy-pasted it over — this is that workflow with the copy-paste taken out. Same
+folders, same files you already have; ClaudeLog just makes sending, tracking and resuming them
+effortless.
 
 ![ClaudeLog](docs/screenshot.png)
 

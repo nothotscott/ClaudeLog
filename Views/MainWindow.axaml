@@ -292,6 +292,19 @@
             <TextBlock Text="{Binding CountdownText}" FontSize="22" FontWeight="SemiBold" />
             <TextBlock Text="{Binding ResetDetail}" Classes="dim" FontSize="11" TextWrapping="Wrap" />
 
+            <!-- Five-hour session usage, from UsageWatcher. Hidden until the first successful poll,
+                 same "degrade to nothing rather than a wrong number" rule as everything else here. -->
+            <ProgressBar Margin="0,6,0,0" Height="6" Minimum="0" Maximum="100"
+                         Value="{Binding SessionUsagePercent}"
+                         IsVisible="{Binding HasSessionUsage}" />
+
+            <!-- Weekly usage, same source, shown only once it's actually meaningful next to the
+                 session bar above. -->
+            <StackPanel Spacing="2" Margin="0,6,0,0" IsVisible="{Binding HasWeeklyUsage}">
+              <ProgressBar Height="4" Minimum="0" Maximum="100" Value="{Binding WeeklyUsagePercent}" />
+              <TextBlock Text="{Binding WeeklyUsageDetail}" Classes="dim" FontSize="10" TextWrapping="Wrap" />
+            </StackPanel>
+
             <!-- Hidden unless asked for, or unless an override is set — see ManualResetVisible. -->
             <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0"
                   IsVisible="{Binding ManualResetVisible}">
