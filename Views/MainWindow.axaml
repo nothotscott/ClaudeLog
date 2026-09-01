@@ -1,0 +1,266 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:vm="using:ClaudeLog.ViewModels"
+        xmlns:ae="using:AvaloniaEdit"
+        mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
+        x:Class="ClaudeLog.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="ClaudeLog"
+        Width="1280" Height="820"
+        MinWidth="900" MinHeight="560">
+
+  <Window.KeyBindings>
+    <KeyBinding Gesture="Ctrl+S" Command="{Binding SaveEditorCommand}" />
+    <KeyBinding Gesture="Ctrl+Enter" Command="{Binding CopyPromptCommand}" />
+    <KeyBinding Gesture="Ctrl+N" Command="{Binding NewPromptCommand}" />
+    <KeyBinding Gesture="Ctrl+Q" Command="{Binding QueuePromptCommand}" />
+    <KeyBinding Gesture="F5" Command="{Binding RefreshTreeCommand}" />
+  </Window.KeyBindings>
+
+  <Grid RowDefinitions="Auto,*,Auto">
+
+    <!-- Header -->
+    <Border Grid.Row="0" Padding="12,8" BorderThickness="0,0,0,1"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+      <Grid ColumnDefinitions="Auto,*,Auto">
+        <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <TextBlock Text="ClaudeLog" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center" />
+          <TextBlock Text="{Binding LogRoot}" Classes="dim" FontSize="12" VerticalAlignment="Center" />
+        </StackPanel>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+          <Button Content="Log folder" Command="{Binding OpenLogRootCommand}" />
+          <Button Content="Refresh" Command="{Binding RefreshTreeCommand}" />
+          <Button Content="settings.json" Command="{Binding OpenSettingsFileCommand}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <!-- Three panes -->
+    <Grid Grid.Row="1" ColumnDefinitions="300,5,*,5,320">
+
+      <!-- Projects and sessions -->
+      <TreeView Grid.Column="0" ItemsSource="{Binding Tree}" SelectedItem="{Binding SelectedNode}"
+                Margin="4" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+        <TreeView.ItemTemplate>
+          <TreeDataTemplate ItemsSource="{Binding Children}" DataType="vm:TreeNodeViewModel">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto" Height="26">
+              <TextBlock Grid.Column="0" Text="{Binding Icon}" FontSize="11" Margin="0,0,6,0"
+                         VerticalAlignment="Center" />
+              <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
+                         TextTrimming="CharacterEllipsis" />
+              <TextBlock Grid.Column="2" Text="{Binding Detail}" Classes="dim" FontSize="10"
+                         Margin="6,0,4,0" MinWidth="38" TextAlignment="Right"
+                         VerticalAlignment="Center" />
+              <!-- The shortcut into Examples/ and Plans/ — always reachable, never clipped. -->
+              <Button Grid.Column="3" Content="&#x29C9;" FontSize="11" Padding="4,0" Margin="4,0,2,0"
+                      Background="Transparent" BorderThickness="0"
+                      IsVisible="{Binding IsFolder}"
+                      ToolTip.Tip="Open this folder in Explorer"
+                      Command="{Binding OpenInExplorerCommand}" />
+            </Grid>
+          </TreeDataTemplate>
+        </TreeView.ItemTemplate>
+
+        <TreeView.Styles>
+          <Style Selector="TreeViewItem" x:DataType="vm:TreeNodeViewModel">
+            <Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}" />
+            <Setter Property="ContextMenu">
+              <Template>
+                <ContextMenu>
+                  <MenuItem Header="Open in Explorer" Command="{Binding OpenInExplorerCommand}" />
+                </ContextMenu>
+              </Template>
+            </Setter>
+          </Style>
+        </TreeView.Styles>
+      </TreeView>
+
+      <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
+
+      <!-- Session: prompts on top, editor below -->
+      <Grid Grid.Column="2" RowDefinitions="Auto,2*,5,3*" Margin="4">
+
+        <StackPanel Grid.Row="0" Spacing="6" Margin="4,4,4,8">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Grid.Column="0" Spacing="2">
+              <TextBlock Text="{Binding SessionTitle}" FontSize="15" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding SessionSubtitle}" Classes="dim" FontSize="11"
+                         TextTrimming="CharacterEllipsis" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                        IsVisible="{Binding HasSession}">
+              <Button Content="New prompt" Command="{Binding NewPromptCommand}"
+                      ToolTip.Tip="Ctrl+N" />
+              <Button Content="{Binding ModeLabel}" Command="{Binding ToggleModeCommand}"
+                      ToolTip.Tip="Switch how this file is split into prompts" />
+              <Button Content="Convert to ---" Command="{Binding ConvertToModernCommand}"
+                      ToolTip.Tip="Rewrite this file with explicit --- separators" />
+            </StackPanel>
+          </Grid>
+
+          <!-- Explorer shortcuts: project folder, then Examples/Plans and any other subfolder -->
+          <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasSession}">
+            <TextBlock Text="Open:" Classes="dim" FontSize="11" VerticalAlignment="Center" />
+            <ItemsControl ItemsSource="{Binding Shortcuts}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <StackPanel Orientation="Horizontal" Spacing="6" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate DataType="vm:TreeNodeViewModel">
+                  <Button Command="{Binding OpenInExplorerCommand}" Padding="8,3" FontSize="11">
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                      <TextBlock Text="{Binding Icon}" FontSize="10" />
+                      <TextBlock Text="{Binding Name}" />
+                    </StackPanel>
+                  </Button>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <Button Content="&#x1F4C4; this file" Padding="8,3" FontSize="11"
+                    Command="{Binding RevealSessionCommand}"
+                    ToolTip.Tip="Show this session file in Explorer" />
+            <Button Content="&#x1F4BB; source" Padding="8,3" FontSize="11"
+                    Command="{Binding OpenProjectSourceCommand}"
+                    ToolTip.Tip="Open the project's source folder" />
+          </StackPanel>
+        </StackPanel>
+
+        <ListBox Grid.Row="1" x:Name="PromptList" ItemsSource="{Binding Prompts}" SelectedItem="{Binding SelectedPrompt}">
+          <ListBox.ItemTemplate>
+            <DataTemplate DataType="vm:PromptViewModel">
+              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="0,2">
+                <TextBlock Grid.Column="0" Text="{Binding Number}" Classes="dim" FontSize="11"
+                           Width="22" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1" Spacing="1">
+                  <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Text="{Binding Meta}" Classes="dim" FontSize="10" />
+                </StackPanel>
+                <Border Grid.Column="2" Classes="pill" Background="{Binding StatusBrush}"
+                        IsVisible="{Binding ShowStatus}" Margin="8,0">
+                  <TextBlock Text="{Binding StatusLabel}" FontSize="10" Foreground="White" />
+                </Border>
+                <Button Grid.Column="3" Content="Copy" FontSize="11" Padding="8,2"
+                        ToolTip.Tip="Copy to clipboard and mark sent (Ctrl+Enter)"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).CopyPromptCommand}"
+                        CommandParameter="{Binding}" />
+                <Button Grid.Column="4" Content="Queue" FontSize="11" Padding="8,2" Margin="4,0,0,0"
+                        ToolTip.Tip="Send when the limit resets (Ctrl+Q)"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).QueuePromptCommand}"
+                        CommandParameter="{Binding}" />
+                <Grid.ContextMenu>
+                  <ContextMenu>
+                    <MenuItem Header="Toggle sent"
+                              Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).ToggleSentCommand}"
+                              CommandParameter="{Binding}" />
+                    <MenuItem Header="Merge with next"
+                              Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).MergeWithNextCommand}"
+                              CommandParameter="{Binding}" />
+                    <Separator />
+                    <MenuItem Header="Delete prompt"
+                              Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).DeletePromptCommand}"
+                              CommandParameter="{Binding}" />
+                  </ContextMenu>
+                </Grid.ContextMenu>
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+
+        <GridSplitter Grid.Row="2" ResizeDirection="Rows" Background="Transparent" />
+
+        <Grid Grid.Row="3" RowDefinitions="Auto,*">
+          <Grid Grid.Row="0" ColumnDefinitions="*,Auto" Margin="2,6,2,4">
+            <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="{Binding EditorHeader}" Classes="h" VerticalAlignment="Center" />
+              <TextBlock Text="unsaved" Classes="dim" FontSize="11" VerticalAlignment="Center"
+                         IsVisible="{Binding IsDirty}" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+              <Button Content="Save" Command="{Binding SaveEditorCommand}" ToolTip.Tip="Ctrl+S" />
+              <Button Content="Copy" Command="{Binding CopyPromptCommand}" ToolTip.Tip="Ctrl+Enter" />
+            </StackPanel>
+          </Grid>
+
+          <Border Grid.Row="1" BorderThickness="1" CornerRadius="3"
+                  BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                  Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
+            <ae:TextEditor x:Name="Editor"
+                           WordWrap="True"
+                           ShowLineNumbers="False"
+                           FontFamily="Cascadia Mono,Consolas,Menlo,monospace"
+                           FontSize="13"
+                           Padding="8,6"
+                           HorizontalScrollBarVisibility="Disabled"
+                           VerticalScrollBarVisibility="Auto" />
+          </Border>
+        </Grid>
+      </Grid>
+
+      <GridSplitter Grid.Column="3" ResizeDirection="Columns" Background="Transparent" />
+
+      <!-- Queue and reset countdown -->
+      <Grid Grid.Column="4" RowDefinitions="Auto,Auto,*" Margin="4,8,8,4">
+
+        <Border Grid.Row="0" Padding="12" CornerRadius="6" BorderThickness="1"
+                BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+          <StackPanel Spacing="4">
+            <TextBlock Text="SESSION LIMIT" Classes="h" />
+            <TextBlock Text="{Binding CountdownText}" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock Text="{Binding ResetDetail}" Classes="dim" FontSize="11" TextWrapping="Wrap" />
+            <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,8,0,0">
+              <TextBox Grid.Column="0" Text="{Binding ManualResetInput}" PlaceholderText="9pm"
+                       FontSize="11" Height="26" Padding="6,2" />
+              <Button Grid.Column="1" Content="Set" FontSize="11" Padding="8,2" Margin="4,0,0,0"
+                      Command="{Binding SetManualResetCommand}" />
+              <Button Grid.Column="2" Content="Clear" FontSize="11" Padding="8,2" Margin="4,0,0,0"
+                      Command="{Binding ClearManualResetCommand}" />
+            </Grid>
+          </StackPanel>
+        </Border>
+
+        <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="2,14,2,6">
+          <TextBlock Grid.Column="0" Text="QUEUE" Classes="h" VerticalAlignment="Center" />
+          <Button Grid.Column="1" Content="Copy next" FontSize="11" Padding="8,2"
+                  IsEnabled="{Binding HasQueue}"
+                  Command="{Binding CopyNextQueuedCommand}" />
+        </Grid>
+
+        <ListBox Grid.Row="2" ItemsSource="{Binding Queue}">
+          <ListBox.ItemTemplate>
+            <DataTemplate DataType="vm:QueueItemViewModel">
+              <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="0,2">
+                <StackPanel Grid.Column="0" Spacing="1">
+                  <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" FontSize="12" />
+                  <TextBlock Text="{Binding Location}" Classes="dim" FontSize="10" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="&#x25B2;" FontSize="9" Padding="5,1"
+                        Background="Transparent" BorderThickness="0"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).QueueUpCommand}"
+                        CommandParameter="{Binding}" />
+                <Button Grid.Column="2" Content="&#x25BC;" FontSize="9" Padding="5,1"
+                        Background="Transparent" BorderThickness="0"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).QueueDownCommand}"
+                        CommandParameter="{Binding}" />
+                <Button Grid.Column="3" Content="&#x2715;" FontSize="10" Padding="5,1"
+                        Background="Transparent" BorderThickness="0"
+                        ToolTip.Tip="Remove from queue"
+                        Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).UnqueueCommand}"
+                        CommandParameter="{Binding}" />
+              </Grid>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
+    </Grid>
+
+    <!-- Status bar -->
+    <Border Grid.Row="2" Padding="12,6" BorderThickness="0,1,0,0"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+      <TextBlock Text="{Binding Status}" FontSize="11" Classes="dim" />
+    </Border>
+  </Grid>
+</Window>

@@ -1,0 +1,395 @@
+using System.Text;
+
+namespace ClaudeLog.Core;
+
+/// <summary>
+/// Checks the parts that must not regress silently: how prompts are split, and whether saving a
+/// file gives back the exact bytes that went in. Run with `ClaudeLog --selftest`.
+///
+/// This exists instead of a test project for the same reason DevMem has `--frame`: the app is a
+/// WinExe, so the behavior that matters has to be reachable from a terminal.
+/// </summary>
+public static class SelfTest
+{
+    private static int _failures;
+
+    public static int Run()
+    {
+        _failures = 0;
+
+        LegacySplitsOnProseBoundaries();
+        LegacyKeepsListsAndFencesWithTheirPrompt();
+        LegacyKeepsHeadedDocumentsWhole();
+        ModernSplitsOnRules();
+        ModernIgnoresRulesInsideFences();
+        HashIgnoresTrailingWhitespace();
+        SaveIsByteIdentical();
+        SavePreservesCrlfAndAbsentBom();
+        AppendUsesTheModeSeparator();
+        ConvertToModernKeepsPromptCount();
+        QuotaReadsARejectedRecord();
+        QuotaIgnoresPastAndMalformedRecords();
+        StateSurvivesAnEditAndAReparse();
+        CodeSpansCoverFencesInlineAndPaths();
+        CodeLikeWordsAreRecognized();
+        WordIndexCompletesFromTheCorpus();
+        SpellCheckFindsTyposAndIgnoresCode();
+
+        Console.WriteLine();
+        Console.WriteLine(_failures == 0 ? "all checks passed" : $"{_failures} check(s) FAILED");
+        return _failures == 0 ? 0 : 1;
+    }
+
+    // ------------------------------------------------------------- parsing
+
+    private static void LegacySplitsOnProseBoundaries()
+    {
+        var text = "First prompt.\nStill the first.\n\nSecond prompt.\n\nThird prompt.";
+        Equal(3, PromptParser.Parse(text, ParseMode.Legacy).Count, "blank line separates prose prompts");
+    }
+
+    private static void LegacyKeepsListsAndFencesWithTheirPrompt()
+    {
+        var text = string.Join("\n",
+            "Here is the result of the script:",
+            "",
+            "```",
+            "some output",
+            "",
+            "more output after a blank line",
+            "```",
+            "",
+            "Next prompt entirely.");
+
+        var prompts = PromptParser.Parse(text, ParseMode.Legacy);
+        Equal(2, prompts.Count, "a fence stays with the line that introduces it");
+        True(prompts[0].Text.Contains("more output"), "blank lines inside a fence are not boundaries");
+
+        var listed = "Do these things:\n\n - one\n - two\n\nUnrelated follow-up.";
+        Equal(2, PromptParser.Parse(listed, ParseMode.Legacy).Count, "a list stays with its lead-in");
+    }
+
+    private static void LegacyKeepsHeadedDocumentsWhole()
+    {
+        var text = string.Join("\n",
+            "# Project Brief",
+            "",
+            "Some prose in the brief.",
+            "",
+            "More prose that is still the brief.",
+            "",
+            "",
+            "This looks good, let's start.");
+
+        var prompts = PromptParser.Parse(text, ParseMode.Legacy);
+        Equal(2, prompts.Count, "a document with headings ends only at a double blank");
+        True(prompts[0].Text.Contains("More prose"), "the whole document is one prompt");
+    }
+
+    private static void ModernSplitsOnRules()
+    {
+        var text = "One.\n\nStill one.\n\n---\n\nTwo.\n\n---\n\nThree.";
+        var prompts = PromptParser.Parse(text, ParseMode.Modern);
+        Equal(3, prompts.Count, "--- separates prompts in modern mode");
+        True(prompts[0].Text.Contains("Still one"), "blank lines are not boundaries in modern mode");
+    }
+
+    private static void ModernIgnoresRulesInsideFences()
+    {
+        var text = "One.\n\n```\n---\n```\n\n---\n\nTwo.";
+        Equal(2, PromptParser.Parse(text, ParseMode.Modern).Count, "--- inside a fence is not a separator");
+    }
+
+    private static void HashIgnoresTrailingWhitespace()
+    {
+        Equal(PromptParser.HashOf("a line\nanother"), PromptParser.HashOf("a line   \nanother\t"),
+            "hash ignores trailing whitespace");
+        NotEqual(PromptParser.HashOf("a line"), PromptParser.HashOf("a different line"),
+            "hash distinguishes different text");
+    }
+
+    // -------------------------------------------------------------- saving
+
+    private static void SaveIsByteIdentical()
+    {
+        var (path, original) = WriteSample("First prompt.\r\n\r\nSecond prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Legacy);
+            doc.ReplacePrompt(0, doc.Prompts[0].Text);
+            doc.Save();
+
+            True(File.ReadAllBytes(path).SequenceEqual(original), "rewriting a prompt unchanged is byte-identical");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void SavePreservesCrlfAndAbsentBom()
+    {
+        var (path, _) = WriteSample("First prompt.\r\n\r\nSecond prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Legacy);
+            doc.ReplacePrompt(1, "Edited second prompt.");
+            doc.Save();
+
+            var bytes = File.ReadAllBytes(path);
+            var text = Encoding.UTF8.GetString(bytes);
+            True(bytes.Length < 3 || !(bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF), "no BOM is added");
+            True(text.Contains("\r\n"), "CRLF is preserved");
+            True(!text.Contains('\n') || !text.Replace("\r\n", "").Contains('\n'), "no bare LF is introduced");
+            True(!text.EndsWith('\n'), "a missing trailing newline stays missing");
+            True(text.Contains("Edited second prompt."), "the edit was written");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void AppendUsesTheModeSeparator()
+    {
+        var (path, _) = WriteSample("First prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Modern);
+            doc.AppendPrompt("Second prompt.");
+            doc.Save();
+
+            var text = File.ReadAllText(path);
+            True(text.Contains("\r\n\r\n---\r\n\r\n"), "modern append writes a --- separator");
+            Equal(2, SessionDocument.Load(path, ParseMode.Modern).Prompts.Count, "the appended prompt parses back");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    private static void ConvertToModernKeepsPromptCount()
+    {
+        var (path, _) = WriteSample("First prompt.\r\n\r\nSecond prompt.\r\n\r\nThird prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Legacy);
+            var before = doc.Prompts.Count;
+            doc.ConvertToModern();
+            doc.Save();
+
+            var reloaded = SessionDocument.Load(path, ParseMode.Modern);
+            Equal(before, reloaded.Prompts.Count, "converting to --- keeps the same prompts");
+            True(File.ReadAllText(path).Contains("---"), "converted file has separators");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    // --------------------------------------------------------------- quota
+
+    /// <summary>
+    /// The record shape is copied from a real transcript. If Claude Code ever changes it, this is
+    /// the check that fails, and the fix is here rather than in a user-visible countdown that
+    /// quietly stops working.
+    /// </summary>
+    private static void QuotaReadsARejectedRecord()
+    {
+        var dir = TempDir();
+        try
+        {
+            var resetsAt = DateTimeOffset.Now.AddHours(3).ToUnixTimeSeconds();
+            WriteTranscript(dir, "session-a.jsonl", $$$"""
+                {"type":"assistant","message":{"content":[{"type":"text","text":"You've hit your session limit"}]},"quotaLimits":{"status":"rejected","resetsAt":{{{resetsAt}}},"unifiedRateLimitFallbackAvailable":false,"rateLimitType":"five_hour","overageStatus":"rejected","upgradePaths":["upgrade_plan"],"isUsingOverage":false}}
+                """);
+
+            using var watcher = new QuotaWatcher(dir);
+            var snapshot = watcher.Scan();
+
+            True(snapshot is not null, "a rejected record is detected");
+            Equal(resetsAt, snapshot?.ResetsAt.ToUnixTimeSeconds() ?? 0, "resetsAt is read as unix seconds");
+            Equal("five_hour", snapshot?.RateLimitType, "rateLimitType is read");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    private static void QuotaIgnoresPastAndMalformedRecords()
+    {
+        var dir = TempDir();
+        try
+        {
+            var past = DateTimeOffset.Now.AddHours(-2).ToUnixTimeSeconds();
+            WriteTranscript(dir, "old.jsonl",
+                $$$"""{"quotaLimits":{"status":"rejected","resetsAt":{{{past}}},"rateLimitType":"five_hour"}}""");
+            WriteTranscript(dir, "allowed.jsonl",
+                $$$"""{"quotaLimits":{"status":"allowed","resetsAt":{{{DateTimeOffset.Now.AddHours(4).ToUnixTimeSeconds()}}}}}""");
+            WriteTranscript(dir, "broken.jsonl", """{"quotaLimits":{"status":"rejected","resetsAt":}""");
+
+            using var watcher = new QuotaWatcher(dir);
+            True(watcher.Scan() is null, "past, allowed and malformed records are all ignored");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    // --------------------------------------------------------------- state
+
+    /// <summary>
+    /// The two ways per-prompt state gets lost if this is wrong: an edit changes a prompt's hash,
+    /// and switching parse mode re-splits the file so every hash changes at once.
+    /// </summary>
+    private static void StateSurvivesAnEditAndAReparse()
+    {
+        var store = new StateStore();
+        const string file = "CallTree/sms.md";
+
+        store.Prompt(file, "aaaa").Status = PromptStatus.Sent;
+        store.State.Queue.Add(new QueueEntry { File = file, Hash = "bbbb" });
+        store.Prompt(file, "bbbb").Status = PromptStatus.Queued;
+        store.Prompt(file, "cccc").Status = PromptStatus.Draft;
+
+        store.Rekey(file, "aaaa", "dddd");
+        Equal(PromptStatus.Sent, store.PeekPrompt(file, "dddd")?.Status, "an edited prompt keeps its status");
+        True(store.PeekPrompt(file, "aaaa") is null, "the old hash is gone after a rekey");
+
+        store.Rekey(file, "bbbb", "eeee");
+        Equal("eeee", store.State.Queue[0].Hash, "the queue follows the rekey");
+
+        // Nothing in this list is live — a mode switch looks exactly like this.
+        store.Prune(file, []);
+        Equal(PromptStatus.Sent, store.PeekPrompt(file, "dddd")?.Status, "prune keeps sent prompts");
+        Equal(PromptStatus.Queued, store.PeekPrompt(file, "eeee")?.Status, "prune keeps queued prompts");
+        True(store.PeekPrompt(file, "cccc") is null, "prune drops stale drafts");
+    }
+
+    // ------------------------------------------------- editing assistance
+
+    private static void CodeSpansCoverFencesInlineAndPaths()
+    {
+        var text = "Run `dotnet build` first.\n\n```\nnot prose at all\n```\n\nSee C:\\Users\\Scott\\Documents and https://telnyx.com now.";
+        var spans = TextScan.CodeAndPathSpans(text);
+
+        True(Covered(spans, text.IndexOf("dotnet", StringComparison.Ordinal)), "inline code is covered");
+        True(Covered(spans, text.IndexOf("not prose", StringComparison.Ordinal)), "fenced block is covered");
+        True(Covered(spans, text.IndexOf("C:\\Users", StringComparison.Ordinal)), "windows path is covered");
+        True(Covered(spans, text.IndexOf("https://", StringComparison.Ordinal)), "url is covered");
+        True(!Covered(spans, text.IndexOf("first", StringComparison.Ordinal)), "prose is not covered");
+    }
+
+    private static bool Covered(List<TextSpan> spans, int offset) => spans.Any(s => s.Contains(offset));
+
+    private static void CodeLikeWordsAreRecognized()
+    {
+        True(TextScan.LooksLikeCode("AIMediaSession"), "PascalCase is code");
+        True(TextScan.LooksLikeCode("resetsAt"), "camelCase is code");
+        True(TextScan.LooksLikeCode("net10"), "digits mean code");
+        True(TextScan.LooksLikeCode("SIP"), "acronyms are code");
+        True(!TextScan.LooksLikeCode("registration"), "an ordinary word is not code");
+        True(!TextScan.LooksLikeCode("Telnyx"), "a capitalized name is not code — the word index decides that one");
+    }
+
+    private static void WordIndexCompletesFromTheCorpus()
+    {
+        var index = new WordIndex();
+        index.Add("registration registration registration registry regicide unrelated");
+
+        var matches = index.Matching("regis", new HashSet<string>(StringComparer.Ordinal), 5);
+        Equal("registration", matches.FirstOrDefault(), "the most-used match comes first");
+        True(matches.Contains("registry"), "other prefix matches are offered");
+        True(!matches.Contains("unrelated"), "non-matches are excluded");
+
+        True(index.Knows("registration"), "a repeated word is known vocabulary");
+        True(!index.Knows("regicide"), "a word used once is not");
+
+        var preferred = new HashSet<string>(StringComparer.Ordinal) { "registry" };
+        Equal("registry", index.Matching("regis", preferred, 5).FirstOrDefault(),
+            "a word from the current prompt outranks a more frequent one");
+    }
+
+    /// <summary>
+    /// End to end against the real Windows spell checker: it must find plain typos, and the
+    /// filtering must keep it off code and off Scott's own vocabulary.
+    /// </summary>
+    private static void SpellCheckFindsTyposAndIgnoresCode()
+    {
+        using var checker = new SpellChecker();
+        if (!checker.Available)
+        {
+            Console.WriteLine("  skip  spell checker unavailable on this machine");
+            return;
+        }
+
+        var index = new WordIndex();
+        index.Add("Telnyx Telnyx Telnyx Proxmox Proxmox Proxmox");
+        var pass = new SpellCheckPass(checker, index);
+
+        var text = "This sentance has a typo. Telnyx and AIMediaSession do not, nor does `mispelled` in code.";
+        var errors = pass.Run(text);
+        var flagged = errors.Select(e => text.Substring(e.Start, e.Length)).ToList();
+
+        True(flagged.Contains("sentance"), "a real typo is flagged");
+        True(!flagged.Contains("Telnyx"), "a word from the logs is not flagged");
+        True(!flagged.Contains("AIMediaSession"), "an identifier is not flagged");
+        True(!flagged.Contains("mispelled"), "text inside backticks is not flagged");
+
+        var suggestions = pass.Suggest("sentance");
+        True(suggestions.Contains("sentence"), "suggestions include the obvious correction");
+
+        var edges = "Telnyx's trunk in compose.yml on ghcr.io stays quiet, but hte typo does not.";
+        var edgeFlags = pass.Run(edges).Select(e => edges.Substring(e.Start, e.Length)).ToList();
+
+        True(!edgeFlags.Contains("Telnyx's"), "the possessive of a known word is not flagged");
+        True(!edgeFlags.Any(w => w.Contains("compose") || w.Contains("yml")), "a filename is not flagged");
+        True(!edgeFlags.Contains("ghcr"), "a domain fragment is not flagged");
+        True(edgeFlags.Contains("hte"), "a typo among them is still flagged");
+    }
+
+    private static string TempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"claudelog-selftest-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(Path.Combine(dir, "D--Source"));
+        return dir;
+    }
+
+    private static void WriteTranscript(string dir, string name, string line) =>
+        File.WriteAllText(Path.Combine(dir, "D--Source", name), line + "\n");
+
+    private static (string Path, byte[] Bytes) WriteSample(string content)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"claudelog-selftest-{Guid.NewGuid():N}.md");
+        var bytes = new UTF8Encoding(false).GetBytes(content);
+        File.WriteAllBytes(path, bytes);
+        return (path, bytes);
+    }
+
+    // ------------------------------------------------------------ asserts
+
+    private static void True(bool condition, string what) => Report(condition, what, null, null);
+
+    private static void Equal<T>(T expected, T actual, string what) =>
+        Report(EqualityComparer<T>.Default.Equals(expected, actual), what, expected, actual);
+
+    private static void NotEqual<T>(T unexpected, T actual, string what) =>
+        Report(!EqualityComparer<T>.Default.Equals(unexpected, actual), what, unexpected, actual);
+
+    private static void Report(bool ok, string what, object? expected, object? actual)
+    {
+        if (ok)
+        {
+            Console.WriteLine($"  ok    {what}");
+            return;
+        }
+
+        _failures++;
+        Console.WriteLine($"  FAIL  {what}" +
+                          (expected is null ? "" : $"  (expected {expected}, got {actual})"));
+    }
+}
