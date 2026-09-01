@@ -4,6 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:ClaudeLog.ViewModels"
         xmlns:ae="using:AvaloniaEdit"
+        xmlns:ed="using:ClaudeLog.Views.Editing"
         mc:Ignorable="d" d:DesignWidth="1280" d:DesignHeight="800"
         x:Class="ClaudeLog.Views.MainWindow"
         x:DataType="vm:MainWindowViewModel"
@@ -80,7 +81,8 @@
       <GridSplitter Grid.Column="1" ResizeDirection="Columns" Background="Transparent" />
 
       <!-- Session: prompts on top, editor below -->
-      <Grid Grid.Column="2" RowDefinitions="Auto,2*,5,3*" Margin="4">
+      <!-- The prompt list now carries the whole file, so it gets the larger share; the splitter moves it. -->
+      <Grid Grid.Column="2" RowDefinitions="Auto,3*,5,2*" Margin="4">
 
         <StackPanel Grid.Row="0" Spacing="6" Margin="4,4,4,8">
           <Grid ColumnDefinitions="*,Auto">
@@ -129,25 +131,52 @@
           </StackPanel>
         </StackPanel>
 
-        <ListBox Grid.Row="1" x:Name="PromptList" ItemsSource="{Binding Prompts}" SelectedItem="{Binding SelectedPrompt}">
+        <!--
+          Each prompt is shown whole rather than as a one-line preview, so the pane reads like the
+          session file itself. Virtualization is off deliberately: item heights here range from one
+          line to seventy, and the largest file in the tree holds 51 prompts — a plain StackPanel
+          measures them all and gets the scrollbar exactly right, which the estimating virtualizer
+          cannot.
+        -->
+        <ListBox Grid.Row="1" x:Name="PromptList" ItemsSource="{Binding Prompts}"
+                 SelectedItem="{Binding SelectedPrompt}"
+                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+          <ListBox.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel />
+            </ItemsPanelTemplate>
+          </ListBox.ItemsPanel>
+          <ListBox.Styles>
+            <!-- A hairline under each prompt does the job the old "12 lines" caption used to do:
+                 say where one prompt ends. The line count itself is redundant now that the text
+                 is all there. -->
+            <Style Selector="ListBoxItem">
+              <Setter Property="Padding" Value="8,7" />
+              <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+              <Setter Property="VerticalContentAlignment" Value="Top" />
+              <Setter Property="BorderThickness" Value="0,0,0,1" />
+              <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+            </Style>
+          </ListBox.Styles>
           <ListBox.ItemTemplate>
             <DataTemplate DataType="vm:PromptViewModel">
-              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" Margin="0,2">
-                <TextBlock Grid.Column="0" Text="{Binding Number}" Classes="dim" FontSize="11"
-                           Width="22" VerticalAlignment="Center" />
-                <StackPanel Grid.Column="1" Spacing="1">
-                  <TextBlock Text="{Binding Preview}" TextTrimming="CharacterEllipsis" />
-                  <TextBlock Text="{Binding Meta}" Classes="dim" FontSize="10" />
-                </StackPanel>
+              <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto">
+                <TextBlock Grid.Column="0" Text="{Binding Number}" Classes="dim"
+                           FontSize="11" Width="24" TextAlignment="Right" Margin="0,2,8,0"
+                           VerticalAlignment="Top" />
+                <ed:MarkdownBlock Grid.Column="1" Source="{Binding Text}" TextWrapping="Wrap"
+                                  FontFamily="Cascadia Mono,Consolas,Menlo,monospace" FontSize="13" />
                 <Border Grid.Column="2" Classes="pill" Background="{Binding StatusBrush}"
-                        IsVisible="{Binding ShowStatus}" Margin="8,0">
+                        IsVisible="{Binding ShowStatus}" Margin="8,0" VerticalAlignment="Top">
                   <TextBlock Text="{Binding StatusLabel}" FontSize="10" Foreground="White" />
                 </Border>
                 <Button Grid.Column="3" Content="Copy" FontSize="11" Padding="8,2"
+                        VerticalAlignment="Top"
                         ToolTip.Tip="Copy to clipboard and mark sent (Ctrl+Enter)"
                         Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).CopyPromptCommand}"
                         CommandParameter="{Binding}" />
-                <Button Grid.Column="4" Content="Queue" FontSize="11" Padding="8,2" Margin="4,0,0,0"
+                <Button Grid.Column="4" Content="Queue" FontSize="11" Padding="8,2"
+                        Margin="4,0,0,0" VerticalAlignment="Top"
                         ToolTip.Tip="Send when the limit resets (Ctrl+Q)"
                         Command="{Binding $parent[ListBox].((vm:MainWindowViewModel)DataContext).QueuePromptCommand}"
                         CommandParameter="{Binding}" />

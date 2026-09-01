@@ -45,9 +45,10 @@ dotnet run -- --quota             # the detected session-limit reset
 dotnet run -- --state             # where settings and state live
 ```
 
-There is no test project. **`--selftest` is the regression net** — 51 checks over prompt splitting, byte-exact saving, the
-quota record format, the state-store invariants and the spelling filters (including a real
-round-trip through the Windows spell checker). Add to `SelfTest.cs` when changing any of those; it
+There is no test project. **`--selftest` is the regression net** — 67 checks over prompt splitting,
+byte-exact saving, the quota record format, the state-store invariants, tree ordering, the
+highlighting rules and the spelling filters (including a real round-trip through the Windows spell
+checker). Add to `SelfTest.cs` when changing any of those; it
 is far more useful than it looks, and it is how the parser rules below were validated against the
 real corpus.
 
@@ -179,13 +180,20 @@ the override; the constructor clears one left stale by a previous run.
 The prompt editor is AvaloniaEdit, not a `TextBox` — per-run coloring and squiggle rendering both
 need a real editor control. Three things sit on top of it, all driven by `EditorController`:
 
-**Highlighting** (`MarkdownColorizer`) covers fenced and inline code, bullets, numbered items,
+**Highlighting** (`MarkdownScanner`) covers fenced and inline code, bullets, numbered items,
 headings, bold and quotes. Deliberately narrow: it's for seeing the shape of a prompt, not for
 being a markdown renderer. Fenced lines come from `PromptParser.MapFences`, the same function the
 parser uses, so the editor can never color something as code that the parser treats as prose. The
 map is recomputed per document change rather than per line, because a line only knows it's inside a
 fence by looking at everything above it and the colorizer runs for every visible line on every
 repaint.
+
+The rules produce **spans**, and two renderers consume them: `MarkdownColorizer` paints them
+through AvaloniaEdit, `MarkdownBlock` builds them as TextBlock inlines for the prompt list. Keep
+them behind the one scanner — the panes show the same text a few pixels apart, and any drift
+between them is immediately visible. One trap in the inline renderer: assigning `null` to a
+`Run.Foreground` is not "inherit", it's "no brush", and the run paints nothing. Only ever *set*
+the non-default values.
 
 **Completion** (`WordIndex`) is Notepad++'s word completion widened to the whole log tree — ~4,200
 distinct words. Words in the current prompt outrank words from months ago. The index is built off
@@ -206,6 +214,22 @@ the filters, because the failure mode is silent noise rather than an error.
 
 Everything degrades: no spell-check service means no squiggles and a logged warning, not a crash.
 
+## The prompt list
+
+The list shows every prompt **in full**, not as a one-line preview, so the pane reads like the
+session file rather than like an index of it. Three things follow from that and are easy to undo by
+accident:
+
+- **Virtualization is off** (`ItemsPanel` is a plain `StackPanel`). Item heights run from one line
+  to seventy; the virtualizer estimates them and the scrollbar jumps. The largest file in the tree
+  holds 51 prompts, so measuring them all costs nothing.
+- **`PromptViewModel.Text` is observable and follows the editor keystroke by keystroke**
+  (`OnEditorTextChanged`). The card sits directly above the caret — showing the last saved version
+  there would contradict what's being typed. `Copy` therefore copies what's on screen, including
+  unsaved edits; `StateStore.Rekey` carries the status across the hash change on save.
+- **Prompt cards are `TextBlock`s, not editors.** Fifty `TextEditor`s would each bring a caret, an
+  undo stack and a text area to a view that is only ever read.
+
 ## Architecture
 
 `Core\` is pure logic with no Avalonia dependency and is exercised by `--selftest`; `ViewModels\`
@@ -217,7 +241,8 @@ reaching for a `TopLevel`.
 |---|---|
 | `Core\PromptParser.cs` | Text → prompts in both modes, fence mapping, content hashing. The rules above live here. |
 | `Core\SessionDocument.cs` | One session file: load, splice-edit, append, merge, convert, atomic save preserving encoding/EOL. |
-| `Core\LogTree.cs` | Scans projects/sessions/attachment folders; `TreeWatcher` debounces external changes. |
+| `Core\LogTree.cs` | Scans projects/sessions/attachment folders, sessions newest-first; `TreeWatcher` debounces external changes. |
+| `Core\MarkdownScanner.cs` | The markdown highlighting rules, as spans over a line. Shared by both renderers. |
 | `Core\StateStore.cs` | `state.json` — per-prompt status, per-file mode, queue, manual reset, last session. |
 | `Core\QuotaWatcher.cs` | Tails Claude Code transcripts for `quotaLimits.resetsAt`. Best-effort by design. |
 | `Core\Settings.cs`, `Paths.cs` | settings.json and the `%LOCALAPPDATA%` locations. |
@@ -228,7 +253,9 @@ reaching for a `TopLevel`.
 | `Core\TextScan.cs` | Code spans, paths, identifier-shaped words, word tokens. Shared by both features. |
 | `Core\WordIndex.cs` | Vocabulary of the whole log tree: completion source and spell-check silencer. |
 | `Views\Editing\EditorController.cs` | Wires the editor: text sync with the VM, highlighting, completion, squiggles, shortcuts. |
-| `Views\Editing\MarkdownColorizer.cs` | The markdown highlighting rules. |
+| `Views\Editing\MarkdownColorizer.cs` | Paints those spans into the editor through AvaloniaEdit. |
+| `Views\Editing\MarkdownBlock.cs` | Paints those spans as TextBlock inlines — the prompt cards in the list. |
+| `Views\Editing\MarkdownPalette.cs` | The colors, shared by both, immutable and allocated once. |
 | `Views\Editing\SquiggleRenderer.cs` | Wavy underlines for spelling errors, visible lines only. |
 | `Core\Cli.cs`, `SelfTest.cs` | Headless commands; attaches to the parent console since this is a WinExe. |
 | `ViewModels\MainWindowViewModel.cs` | Tree, session, editor, copy/queue, countdown, reset handling. |

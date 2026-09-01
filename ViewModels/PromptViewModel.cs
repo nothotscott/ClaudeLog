@@ -7,10 +7,16 @@ namespace ClaudeLog.ViewModels;
 public sealed partial class PromptViewModel : ViewModelBase
 {
     public required int Index { get; init; }
+
+    /// <summary>Identity of the prompt as it exists on disk — unchanged by unsaved edits.</summary>
     public required string Hash { get; init; }
-    public required string Text { get; init; }
-    public required string Preview { get; init; }
-    public required int LineCount { get; init; }
+
+    /// <summary>
+    /// The prompt body, shown whole in the list. Observable because the list is a view of the file:
+    /// while a prompt is being edited below, its card above follows along keystroke by keystroke
+    /// rather than showing the last saved version.
+    /// </summary>
+    [ObservableProperty] private string _text = string.Empty;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(StatusLabel))]
@@ -21,8 +27,6 @@ public sealed partial class PromptViewModel : ViewModelBase
     [ObservableProperty] private bool _isSelected;
 
     public int Number => Index + 1;
-
-    public string Meta => LineCount == 1 ? "1 line" : $"{LineCount} lines";
 
     public bool ShowStatus => Status != PromptStatus.Draft;
 

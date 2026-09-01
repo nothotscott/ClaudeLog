@@ -255,8 +255,6 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
                 Index = prompt.Index,
                 Hash = prompt.Hash,
                 Text = prompt.Text,
-                Preview = prompt.Preview,
-                LineCount = prompt.LineCount,
                 Status = _store.PeekPrompt(CurrentKey, prompt.Hash)?.Status ?? PromptStatus.Draft,
             });
         }
@@ -315,7 +313,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     partial void OnEditorTextChanged(string value)
     {
-        if (!_suppressEditorSync) IsDirty = true;
+        if (_suppressEditorSync) return;
+        IsDirty = true;
+
+        // The prompt list shows each prompt in full, so it has to be a view of the text being
+        // typed, not of the last save — otherwise the card directly above the caret contradicts it.
+        if (!IsNewPrompt && SelectedPrompt is not null) SelectedPrompt.Text = value;
     }
 
     partial void OnIsNewPromptChanged(bool value) => OnPropertyChanged(nameof(EditorHeader));

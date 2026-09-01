@@ -30,6 +30,8 @@ public static class SelfTest
         QuotaReadsARejectedRecord();
         QuotaIgnoresPastAndMalformedRecords();
         StateSurvivesAnEditAndAReparse();
+        SessionsAreSortedNewestFirst();
+        MarkdownSpansCoverTheHighlightedShapes();
         CodeSpansCoverFencesInlineAndPaths();
         CodeLikeWordsAreRecognized();
         WordIndexCompletesFromTheCorpus();
@@ -271,6 +273,64 @@ public static class SelfTest
     }
 
     // ------------------------------------------------- editing assistance
+
+    // ------------------------------------------------------- tree and text
+
+    private static void SessionsAreSortedNewestFirst()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"claudelog-selftest-{Guid.NewGuid():N}");
+        var project = Path.Combine(root, "Project");
+        Directory.CreateDirectory(Path.Combine(project, "Plans"));
+
+        // Alphabetical order would be the exact reverse of this.
+        var stamp = new DateTime(2026, 1, 1, 9, 0, 0);
+        foreach (var (name, days) in new[] { ("aaa.md", 0), ("mmm.txt", 5), ("zzz.md", 10) })
+        {
+            var path = Path.Combine(project, name);
+            File.WriteAllText(path, "a prompt");
+            File.SetLastWriteTime(path, stamp.AddDays(days));
+        }
+
+        var sessions = LogTree.Scan(root).Single().Sessions;
+
+        Equal(3, sessions.Count, "only files directly in the project are sessions");
+        Equal("zzz.md", sessions[0].Name, "the newest session sorts first");
+        Equal("aaa.md", sessions[2].Name, "the oldest session sorts last");
+
+        Directory.Delete(root, recursive: true);
+    }
+
+    private static void MarkdownSpansCoverTheHighlightedShapes()
+    {
+        var spans = new List<MarkdownSpan>();
+
+        MarkdownScanner.ScanLine("- a bullet", false, spans);
+        Equal(new MarkdownSpan(0, 1, MarkdownRole.Marker, true), spans.Single(), "a bullet marker is one span");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("  12. a numbered step", false, spans);
+        Equal(new MarkdownSpan(2, 3, MarkdownRole.Marker, true), spans.Single(), "a numbered marker keeps its indent");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("run `dotnet build` now", false, spans);
+        Equal(new MarkdownSpan(4, 14, MarkdownRole.Code, false), spans.Single(), "inline code spans its backticks");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("## Heading", false, spans);
+        Equal(MarkdownRole.Heading, spans.Single().Role, "a heading colors the whole line");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("#hashtag not a heading", false, spans);
+        Equal(0, spans.Count, "a bare hash is not a heading");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("- `x` and **y**", false, spans);
+        Equal(3, spans.Count, "marker, code and bold coexist on one line");
+
+        spans.Clear();
+        MarkdownScanner.ScanLine("- not a bullet in here", true, spans);
+        Equal(MarkdownRole.Code, spans.Single().Role, "a fenced line is code, whatever it contains");
+    }
 
     private static void CodeSpansCoverFencesInlineAndPaths()
     {

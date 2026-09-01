@@ -11,9 +11,13 @@ them. Same folders, same files, same plain markdown.
 ## What it does
 
 - **Projects and sessions** in a tree — one folder per project, one file per session, exactly the
-  layout that's already there. `.md` and `.txt` both count.
+  layout that's already there. `.md` and `.txt` both count. Sessions are listed newest-edited
+  first, so whatever you were working on is at the top.
 - **Prompts as units.** A session file is split into its prompts, each with a one-click **Copy**
   that also marks it sent and timestamps it. No more selecting to the next blank line by hand.
+- **The whole file, visible.** Each prompt is shown in full and highlighted, so the list reads like
+  the session file itself rather than an index of it — and the prompt you're editing updates there
+  as you type.
 - **A queue for when the session limit hits.** Queue the prompts you couldn't send; ClaudeLog
   reads the reset time out of Claude Code's own transcripts, counts down, and when the limit
   resets it toasts you, flashes the taskbar and puts the next queued prompt on the clipboard.
@@ -26,7 +30,8 @@ them. Same folders, same files, same plain markdown.
 The editor is built for getting a prompt down fast and reading it back.
 
 - **Markdown highlighting** — fenced and inline code, bullets, numbered steps, headings, bold,
-  quotes. Enough to see the shape of a prompt at a glance, and nothing else.
+  quotes. Enough to see the shape of a prompt at a glance, and nothing else. The same colors in the
+  editor and in the list above it.
 - **Completion from your own logs.** Every word across every session is indexed, so `SIPSorc…`
   completes to `SIPSorcery` in a file that has never mentioned it. Type three letters, or press
   `Ctrl+Space`. Words from the prompt you're writing rank above words from June.

@@ -48,15 +48,21 @@ public static class LogTree
             var project = new LogProject { Name = name, Path = dir };
             try
             {
-                foreach (var file in Directory.EnumerateFiles(dir).Where(IsSessionFile)
-                             .OrderBy(f => f, StringComparer.OrdinalIgnoreCase))
+                // Newest first. A session file gets worked on for days after it's created, so the
+                // one touched last is almost always the one being continued — alphabetical order
+                // buried it somewhere among thirty siblings. Name breaks ties, so the order doesn't
+                // shuffle when Syncthing lands a batch of files with equal timestamps.
+                foreach (var file in new DirectoryInfo(dir).EnumerateFiles()
+                             .Where(f => IsSessionFile(f.Name))
+                             .OrderByDescending(f => f.LastWriteTime)
+                             .ThenBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
                 {
                     project.Sessions.Add(new LogSession
                     {
-                        Name = System.IO.Path.GetFileName(file),
-                        Path = file,
-                        Key = Paths.RelativeKey(root, file),
-                        Modified = File.GetLastWriteTime(file),
+                        Name = file.Name,
+                        Path = file.FullName,
+                        Key = Paths.RelativeKey(root, file.FullName),
+                        Modified = file.LastWriteTime,
                     });
                 }
 
