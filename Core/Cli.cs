@@ -10,7 +10,7 @@ namespace ClaudeLog.Core;
 public static class Cli
 {
     private static readonly string[] Commands =
-        ["--parse", "--tree", "--quota", "--state", "--spell", "--selftest", "--help", "-h", "/?"];
+        ["--parse", "--tree", "--quota", "--state", "--spell", "--selftest", "--startup", "--help", "-h", "/?"];
 
     public static bool IsHeadless(string[] args) => args.Any(a => Commands.Contains(a, StringComparer.OrdinalIgnoreCase));
 
@@ -52,6 +52,7 @@ public static class Cli
               ClaudeLog --state               show where state and settings live
               ClaudeLog --spell <file>        words the spell checker would flag in a file
               ClaudeLog --selftest            check the parser and the save round-trip
+              ClaudeLog --startup             boot the UI without showing it, then exit
             """);
         return 0;
     }
@@ -225,7 +226,7 @@ public static class Cli
     private static extern bool AttachConsole(int processId);
 
     /// <summary>A WinExe has no console of its own; borrow the terminal's so output is visible.</summary>
-    private static void AttachToParentConsole()
+    internal static void AttachToParentConsole()
     {
         try
         {

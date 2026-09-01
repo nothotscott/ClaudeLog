@@ -26,15 +26,12 @@ public sealed class Settings
     /// <summary>Stage the next queued prompt on the clipboard the moment the limit resets.</summary>
     public bool StageClipboardOnReset { get; set; } = true;
 
-    /// <summary>Log folder name → source folder, for "Open project source". Optional.</summary>
-    public Dictionary<string, string> ProjectSources { get; set; } = new()
-    {
-        ["BrandBully"] = @"D:\Source\BrandBully",
-        ["CallTree"] = @"D:\Source\repos\CallTree",
-        ["ClaudeLog"] = @"D:\Source\repos\ClaudeLog",
-        ["DevMem"] = @"D:\Source\repos\DevMem",
-        ["SnapSiphon"] = @"D:\Source\repos\SnapSiphon",
-    };
+    /// <summary>
+    /// Log folder name → source folder, for "Open project source". Optional, and empty by default:
+    /// the mapping isn't mechanical, and a downloaded binary shouldn't arrive pre-filled with
+    /// paths from the machine it was written on.
+    /// </summary>
+    public Dictionary<string, string> ProjectSources { get; set; } = [];
 
     private static readonly JsonSerializerOptions Options = new()
     {

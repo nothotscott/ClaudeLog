@@ -83,7 +83,22 @@ ClaudeLog --quota            # the detected session-limit reset
 ClaudeLog --state            # where settings and state live
 ClaudeLog --spell <file>     # words the spell checker would flag in a file
 ClaudeLog --selftest         # parser, save round-trip, spelling and state checks
+ClaudeLog --startup          # boot the UI without showing it, then exit
 ```
+
+## Install
+
+Requires **Windows x64**. The released binary is self-contained — no .NET runtime, no installer, no
+dependencies.
+
+Download [**ClaudeLog.exe**](https://github.com/nothotscott/ClaudeLog/releases/latest/download/ClaudeLog.exe)
+from the [latest release](https://github.com/nothotscott/ClaudeLog/releases/latest) and run it. It
+is not code-signed, so SmartScreen warns the first time; the release page publishes a SHA-256 to
+check the download against.
+
+On first run it writes `%LOCALAPPDATA%\ClaudeLog\settings.json` and looks for logs in
+`Documents\ClaudeLog`. Point `LogRoot` at wherever yours live — one folder per project, one markdown
+file per session — and press `F5`.
 
 ## Build
 
@@ -94,6 +109,14 @@ dotnet run
 
 .NET 10, Avalonia 12, AvaloniaEdit. Windows only — Explorer integration, the taskbar flash and the
 spell checker are all Win32/COM.
+
+Every push builds the release binary and runs it (`--startup`, `--selftest`, `--parse`). Pushing a
+`v*` tag publishes that same binary as a GitHub release:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## Where things are
 

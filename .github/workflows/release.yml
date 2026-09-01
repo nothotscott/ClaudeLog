@@ -1,0 +1,72 @@
+name: Release
+
+# Pushing a v* tag publishes a GitHub release with ClaudeLog.exe attached.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The binary comes from build.yml, the same workflow that runs on every push, so the release ships
+# exactly what CI has already built and smoke-tested. To produce a build without cutting a release,
+# run build.yml manually - it uploads the same files as a workflow artifact.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write # gh release create
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: publish
+
+      # Asset names come from the file names, so the exe is always reachable at
+      # https://github.com/nothotscott/ClaudeLog/releases/latest/download/ClaudeLog.exe
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job never checks the repo out - it only downloads the artifact - so gh has no git
+          # remote to infer the target from and fails with "not a git repository". GH_REPO tells it
+          # directly, which is cheaper than cloning the whole repo just to give gh its bearings.
+          GH_REPO: ${{ github.repository }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          $notes = @(
+            '## Install',
+            '',
+            'Download **ClaudeLog.exe** below and run it. It is a single self-contained binary - no .NET runtime, no installer, no dependencies.',
+            '',
+            'On first run it creates `%LOCALAPPDATA%\ClaudeLog\settings.json` and looks for your logs in `Documents\ClaudeLog`. Point `LogRoot` at wherever you keep them - one folder per project, one markdown file per session - and press F5.',
+            '',
+            'Windows x64 only: Explorer integration, the taskbar flash and the spell checker are all Win32/COM. The binary is not code-signed, so SmartScreen will warn on first run.',
+            '',
+            "SHA-256: ``$env:SHA256``"
+          ) -join "`n"
+          $notes | Out-File release-notes.md -Encoding utf8
+
+          $ghArgs = @(
+            'release', 'create', '${{ github.ref_name }}',
+            'publish/ClaudeLog.exe',
+            'publish/ClaudeLog.exe.sha256',
+            '--title', 'ClaudeLog ${{ needs.build.outputs.version }}',
+            '--notes-file', 'release-notes.md',
+            '--generate-notes'
+          )
+          if ('${{ needs.build.outputs.version }}' -match '-') { $ghArgs += '--prerelease' }
+          gh @ghArgs

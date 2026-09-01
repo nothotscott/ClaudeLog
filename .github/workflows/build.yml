@@ -1,0 +1,171 @@
+name: Build
+
+# Every push and pull request builds the release binary and runs it. That is the point: what CI
+# proves is not "it compiles" but "the exe a tag would ship actually starts", so cutting a release
+# is never the first time this path runs.
+#
+# release.yml calls this workflow rather than repeating it, so there is exactly one definition of
+# how ClaudeLog is packaged. Change the publish flags here and the release changes with them.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    outputs:
+      version:
+        description: Version stamped into the binary (tag without the leading v, else 0.0.0-dev.N).
+        value: ${{ jobs.build.outputs.version }}
+      artifact:
+        description: Name of the uploaded artifact holding ClaudeLog.exe and its checksum.
+        value: ${{ jobs.build.outputs.artifact }}
+      sha256:
+        description: SHA-256 of the published ClaudeLog.exe.
+        value: ${{ jobs.build.outputs.sha256 }}
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    name: Build win-x64
+    runs-on: windows-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      artifact: ${{ steps.version.outputs.artifact }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      # github.ref is the caller's ref when release.yml calls this, so a tag build gets the tag
+      # version here without release.yml having to pass anything in.
+      - name: Resolve version
+        id: version
+        run: |
+          if ('${{ github.ref }}' -like 'refs/tags/*') {
+            $version = '${{ github.ref_name }}' -replace '^v', ''
+          } else {
+            $version = '0.0.0-dev.${{ github.run_number }}'
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "artifact=ClaudeLog-$version-win-x64" >> $env:GITHUB_OUTPUT
+          Write-Host "Version: $version"
+
+      # The csproj, not the .slnx: publishing a solution warns about a shared output directory.
+      #
+      # Self-contained so the download needs no .NET runtime installed, single-file so it is one
+      # .exe someone can drop anywhere, and compressed because that roughly halves the download for
+      # no startup cost that matters in a window you leave open all day.
+      #
+      # IncludeNativeLibrariesForSelfExtract is what makes "single file" true here. Without it,
+      # PublishSingleFile leaves Avalonia's three native dependencies - libSkiaSharp, av_libglesv2,
+      # libHarfBuzzSharp - sitting next to the exe, and a release advertising one file would ship
+      # four. (The 100 MB of native .pdb they also drag in is removed by a target in the csproj.)
+      #
+      # Deliberately NOT trimmed. Avalonia resolves controls, styles and converters by reflection
+      # from compiled XAML, so a trimmer removing something only the released binary needs is
+      # precisely the silent, release-only breakage this project has no test suite to catch.
+      #
+      # TreatWarningsAsErrors holds the line at the zero warnings this project builds with today.
+      # If an SDK bump ever introduces an unrelated analyser warning it will block a release, and
+      # the fix is to fix the warning - or, knowingly, to drop this one flag.
+      - name: Publish
+        run: >
+          dotnet publish ClaudeLog.csproj
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -p:TreatWarningsAsErrors=true
+          -p:Version=${{ steps.version.outputs.version }}
+          --output publish
+
+      # ClaudeLog is a WinExe, and PowerShell does NOT wait for a GUI-subsystem process: `.\x.exe`
+      # returns immediately, $LASTEXITCODE stays empty and nothing is captured. Written the obvious
+      # way, every check below would pass no matter what the binary did. Start-Process -Wait
+      # -PassThru is what makes these assertions mean anything - do not "simplify" it.
+      - name: Smoke test the packaged exe
+        run: |
+          function Invoke-ClaudeLog {
+            param([string[]]$ClaudeLogArgs)
+
+            $out = (New-TemporaryFile).FullName
+            $err = (New-TemporaryFile).FullName
+            $run = @{
+              FilePath = '.\publish\ClaudeLog.exe'
+              ArgumentList = $ClaudeLogArgs
+              Wait = $true
+              PassThru = $true
+              NoNewWindow = $true
+              RedirectStandardOutput = $out
+              RedirectStandardError = $err
+            }
+
+            $proc = Start-Process @run
+            $text = @((Get-Content $out -Raw), (Get-Content $err -Raw)) -join "`n"
+            Remove-Item $out, $err -ErrorAction SilentlyContinue
+
+            Write-Host $text
+            if ($proc.ExitCode -ne 0) { throw "ClaudeLog.exe $ClaudeLogArgs exited with $($proc.ExitCode)" }
+            return $text
+          }
+
+          # The UI. --selftest never touches Avalonia, so without this a bundle that failed to
+          # unpack its native libraries would pass everything else and break on first download.
+          Write-Host '--- startup ---'
+          $startup = Invoke-ClaudeLog '--startup'
+          if ($startup -notmatch 'MainWindow loaded') { throw 'the window did not load' }
+
+          # The logic: parsing, byte-exact saving, the quota format, state, highlighting, spelling.
+          Write-Host '--- selftest ---'
+          $selftest = Invoke-ClaudeLog '--selftest'
+          if ($selftest -notmatch 'all checks passed') { throw 'a self-test check failed' }
+
+          # Reading a real file off disk from inside the single-file bundle.
+          Write-Host '--- parse ---'
+          @(
+            'First prompt, with `inline code`.', '', '---', '',
+            '# Second prompt', '', 'A heading and a paragraph.', '', '---', '',
+            'Third prompt.'
+          ) | Out-File fixture.md -Encoding utf8
+          $parse = Invoke-ClaudeLog @('--parse', 'fixture.md', '--modern')
+          if ($parse -notmatch 'prompts 3') { throw "expected 3 prompts, got: $parse" }
+
+      - name: Checksum
+        id: checksum
+        run: |
+          $hash = (Get-FileHash .\publish\ClaudeLog.exe -Algorithm SHA256).Hash.ToLower()
+          "$hash  ClaudeLog.exe" | Out-File .\publish\ClaudeLog.exe.sha256 -Encoding ascii
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA-256: $hash"
+
+      # publish/ should hold exactly ClaudeLog.exe and its checksum. Anything else means the bundle
+      # sprang a leak - a native library or a symbol file that stopped being packed - and the
+      # release would quietly ship a binary that needs files beside it.
+      - name: Check the publish is one file
+        run: |
+          $extra = Get-ChildItem publish -Recurse -File |
+            Where-Object { $_.Name -notin 'ClaudeLog.exe', 'ClaudeLog.exe.sha256' }
+          if ($extra) { throw "unexpected files in publish/: $($extra.Name -join ', ')" }
+          '{0:N1} MB' -f ((Get-Item .\publish\ClaudeLog.exe).Length / 1MB)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: publish/
+          if-no-files-found: error

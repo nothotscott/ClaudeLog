@@ -43,6 +43,7 @@ dotnet run -- --tree              # projects, sessions, prompt counts, parse mod
 dotnet run -- --parse <file>      # prompt boundaries, hashes and statuses (--legacy / --modern)
 dotnet run -- --quota             # the detected session-limit reset
 dotnet run -- --state             # where settings and state live
+dotnet run -- --startup           # boot Avalonia and load MainWindow without showing it, then exit
 ```
 
 There is no test project. **`--selftest` is the regression net** — 67 checks over prompt splitting,
@@ -263,6 +264,37 @@ reaching for a `TopLevel`.
 
 Editing writes back by **splicing the prompt's line range into the original text**, never by
 re-serializing the whole file — that's what keeps every hand-placed separator and blank line intact.
+
+## Releases
+
+Same shape as DevMem. `.github/workflows/build.yml` publishes a self-contained, single-file,
+compressed `win-x64` binary and **runs it**; `release.yml` calls that workflow on a `v*` tag and
+attaches what it produced, so a release ships exactly the binary CI already smoke-tested.
+
+```powershell
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Two things here are specific to this app being a GUI program, and both are easy to undo by accident:
+
+- **PowerShell does not wait for a WinExe.** `.\ClaudeLog.exe --selftest` returns immediately,
+  `$LASTEXITCODE` stays empty and nothing is captured — written the obvious way, every CI assertion
+  passes no matter what the binary does. The smoke-test step uses `Start-Process -Wait -PassThru`
+  with redirected output for exactly this reason. Verified: the obvious form really does capture
+  zero lines.
+- **`--startup` is the only check that touches Avalonia.** `Cli.IsHeadless` returns before any UI
+  code, so `--selftest` cannot catch a single-file bundle that failed to unpack its native
+  libraries or a window whose XAML stopped loading. `Program.Startup` calls
+  `SetupWithoutStarting()` and constructs `MainWindow`, which loads the whole window's XAML,
+  styles and templates, then exits.
+
+**Not trimmed**, deliberately: Avalonia resolves controls, styles and converters by reflection from
+compiled XAML, and a trimmer dropping something only the released binary needs is the silent,
+release-only breakage this project has no test suite to catch. `TreatWarningsAsErrors` is on in the
+publish, holding the line at the zero warnings the project builds with today.
+
+`Settings.ProjectSources` defaults to **empty**. It's the one setting whose useful value is specific
+to one machine, and a downloaded binary shouldn't arrive pre-filled with paths from another.
 
 ## Environment gotchas
 

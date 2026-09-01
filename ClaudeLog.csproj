@@ -14,6 +14,18 @@
     <AvaloniaResource Include="Assets\**" />
   </ItemGroup>
 
+  <!--
+    SkiaSharp and HarfBuzzSharp ship 100 MB of native .pdb next to their .dll — debug symbols for
+    somebody else's C++, three times the size of the app, and no use to anyone downloading it.
+    Nothing else drops them: DebugType and AllowedReferenceRelatedFileExtensions both leave native
+    runtime assets alone, so they have to be removed from the publish list by hand.
+  -->
+  <Target Name="DropNativeSymbolsFromPublish" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)" Condition="'%(Extension)' == '.pdb'" />
+    </ItemGroup>
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />

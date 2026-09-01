@@ -1,6 +1,33 @@
+# Build output
 bin/
 obj/
-*.user
+[Dd]ebug/
+[Rr]elease/
+publish/
+artifacts/
+
+# Visual Studio / Rider / VS Code
 .vs/
 .idea/
+*.user
 *.suo
+*.userprefs
+*.DotSettings.user
+.vscode/
+
+# Test and coverage output
+[Tt]est[Rr]esult*/
+*.coverage
+*.trx
+
+# NuGet
+*.nupkg
+packages/
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store
