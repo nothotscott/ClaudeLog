@@ -71,9 +71,30 @@ public sealed class SessionDocument
     {
         var prompt = Prompts[index];
         var lines = PromptParser.SplitLines(Text).ToList();
+        var body = TrimBlankEnds(newText);
+
         lines.RemoveRange(prompt.StartLine, prompt.EndLine - prompt.StartLine);
-        lines.InsertRange(prompt.StartLine, PromptParser.SplitLines(newText.Replace("\r\n", "\n")));
+        if (body.Length > 0) lines.InsertRange(prompt.StartLine, PromptParser.SplitLines(body));
         SetText(string.Join("\n", lines));
+    }
+
+    /// <summary>
+    /// Drops blank lines from both ends of a replacement, because a prompt's line range never
+    /// includes the ones around it — <see cref="PromptParser"/> trims them off when it emits the
+    /// prompt. Without this, saving a prompt whose editor text ends in a blank line splices a
+    /// trimmed range out and an untrimmed one back in, so every save adds one more blank line to
+    /// the file. The editor keeps whatever the writer typed; the file gets the prompt.
+    /// </summary>
+    public static string TrimBlankEnds(string text)
+    {
+        var lines = PromptParser.SplitLines(text);
+        var start = 0;
+        var end = lines.Length;
+
+        while (start < end && lines[start].Trim().Length == 0) start++;
+        while (end > start && lines[end - 1].Trim().Length == 0) end--;
+
+        return string.Join("\n", lines[start..end]);
     }
 
     public void DeletePrompt(int index)
@@ -139,7 +160,9 @@ public sealed class SessionDocument
 
     /// <summary>
     /// Atomic save: write a sibling temp file, then replace. Never truncate the real file in
-    /// place — Syncthing and Notepad++ both watch it.
+    /// place — Syncthing and Notepad++ both watch it. The swap itself is
+    /// <see cref="AtomicFile.Replace"/>, which is where the retries for a destination one of them
+    /// has open live.
     /// </summary>
     public void Save()
     {
@@ -152,7 +175,6 @@ public sealed class SessionDocument
         var tmp = System.IO.Path.Combine(dir, "." + System.IO.Path.GetFileName(Path) + ".claudelog.tmp");
 
         File.WriteAllText(tmp, body, new UTF8Encoding(HasBom));
-        if (File.Exists(Path)) File.Replace(tmp, Path, null);
-        else File.Move(tmp, Path);
+        AtomicFile.Replace(tmp, Path);
     }
 }

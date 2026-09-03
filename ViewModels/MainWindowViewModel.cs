@@ -31,6 +31,10 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     /// and a validator that runs before the dialog will close. Null means cancelled.</summary>
     public Func<string, string, string, int, Func<string, string?>, Task<string?>>? AskForText { get; set; }
 
+    /// <summary>Shows the settings dialog on a copy of the settings, and gives back what it
+    /// edited. Null means cancelled — see <see cref="OpenSettings"/>.</summary>
+    public Func<Settings, Task<Settings?>>? EditSettings { get; set; }
+
     public MainWindowViewModel()
     {
         _settings = Settings.Load();
@@ -165,6 +169,22 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         }
 
         _treeWatcher ??= CreateWatcher();
+        RefreshTerminalDots();
+    }
+
+    /// <summary>
+    /// The small dot next to a session's name in the tree — every session's own terminal, not just
+    /// the currently open one, so a running Claude Code can be spotted at a glance without opening
+    /// each file. Checked on the same tick as the header pill (<see cref="OnTick"/>), so a terminal
+    /// closed from under the app goes dark within a second there too.
+    /// </summary>
+    private void RefreshTerminalDots()
+    {
+        foreach (var node in Tree.SelectMany(p => p.Children).Where(c => c.Kind == NodeKind.Session))
+        {
+            var pid = node.Key is null ? null : _store.PeekFile(node.Key)?.TerminalPid;
+            node.HasRunningTerminal = pid is not null && WinTerminal.IsAlive(pid.Value);
+        }
     }
 
     private TreeWatcher CreateWatcher()
@@ -318,6 +338,18 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     /// <summary>Vocabulary from the whole log tree. Replaced wholesale once the background build finishes.</summary>
     [ObservableProperty] private WordIndex _words = new();
 
+    /// <summary>
+    /// Set while a save re-selects the prompt it has just written.
+    ///
+    /// Saving reparses the file and rebuilds every card, so the <see cref="PromptViewModel"/> the
+    /// editor was bound to is gone and a new one takes its place — and selecting that one would
+    /// normally push the file's copy of the text back into the editor. That push is what moved the
+    /// caret to the end of the prompt on every Ctrl+S, and what took away the blank lines at the
+    /// end that the parser trims off a prompt but a writer is in the middle of typing. The editor
+    /// already holds this text; leaving it alone is the whole fix.
+    /// </summary>
+    private bool _keepEditorText;
+
     public string EditorHeader => IsNewPrompt
         ? "New prompt"
         : SelectedPrompt is null ? "Editor" : $"Prompt {SelectedPrompt.Number}";
@@ -326,6 +358,13 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     {
         if (oldValue is not null) oldValue.IsSelected = false;
         if (newValue is not null) newValue.IsSelected = true;
+
+        // A save is re-selecting what is already in the editor: change the selection, not the text.
+        if (_keepEditorText)
+        {
+            OnPropertyChanged(nameof(EditorHeader));
+            return;
+        }
 
         if (IsDirty && !ReferenceEquals(oldValue, newValue)) SaveEditorIfDirty(oldValue);
 
@@ -394,8 +433,29 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             IsDirty = false;
             IsNewPrompt = false;
 
-            ReloadPrompts();
-            SelectPromptAt(index);
+            // Rebuilding the cards clears the selection and sets it again, and both halves of that
+            // would push text into the editor — which is what used to move the caret on every
+            // save. It is only safe to skip when the file came back agreeing with the editor:
+            // writing a blank line into a legacy file can split one prompt into two, and there the
+            // editor is holding text that no longer belongs to the prompt it is bound to. Pushing
+            // the file's version then is both honest and what stops a second Ctrl+S duplicating it.
+            var agrees = index < _doc.Prompts.Count &&
+                         _doc.Prompts[index].Text == SessionDocument.TrimBlankEnds(EditorText);
+
+            // Emptying the list deselects on its own, and that half would blank the editor before
+            // the reselection filled it in again, so it is always suppressed.
+            _keepEditorText = true;
+            try
+            {
+                ReloadPrompts();
+                _keepEditorText = agrees;
+                SelectPromptAt(index);
+            }
+            finally
+            {
+                _keepEditorText = false;
+            }
+
             Status = $"Saved {Path.GetFileName(_doc.Path)}";
         }
         catch (Exception ex)
@@ -437,6 +497,16 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         }
     }
 
+    /// <summary>The shell this session's Claude Code runs in — the project's own choice, or the global default.</summary>
+    private TerminalShell SessionShell
+    {
+        get
+        {
+            var project = Shortcuts.FirstOrDefault(s => s.Kind == NodeKind.Project)?.Name;
+            return project is null ? _settings.DefaultShell : _settings.ShellFor(project);
+        }
+    }
+
     /// <summary>
     /// Picks up a terminal this file already has: one started earlier in this run, or one that
     /// outlived a restart of the app and is still holding its PID file.
@@ -450,7 +520,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             var file = _store.ForFile(CurrentKey);
             if (file.ClaudeSessionId is { Length: > 0 } id && file.SessionDir is { Length: > 0 } dir)
             {
-                var pid = ClaudeTerminal.Reattach(id, file.TerminalPid);
+                var pid = WinTerminal.Reattach(id, file.TerminalPid);
                 if (pid is not null) _terminal = new TerminalSession(id, dir, pid.Value);
 
                 if (file.TerminalPid != pid)
@@ -466,7 +536,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
     private void UpdateTerminalLabel()
     {
-        TerminalRunning = _terminal is not null && ClaudeTerminal.IsAlive(_terminal.Pid);
+        TerminalRunning = _terminal is not null && WinTerminal.IsAlive(_terminal.Pid);
 
         if (!TerminalRunning) _terminal = null;
 
@@ -530,7 +600,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         }
 
         var file = _store.ForFile(CurrentKey);
-        var id = file.ClaudeSessionId is { Length: > 0 } existing ? existing : ClaudeTerminal.NewSessionId();
+        var id = file.ClaudeSessionId is { Length: > 0 } existing ? existing : WinTerminal.NewSessionId();
         var title = $"{Path.GetFileNameWithoutExtension(_doc.Path)} · ClaudeLog";
 
         TerminalBusy = true;
@@ -538,7 +608,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
 
         try
         {
-            var session = await ClaudeTerminal.StartAsync(_settings, id, dir, title);
+            var session = await WinTerminal.StartAsync(_settings, id, dir, title, SessionShell);
             _terminal = session;
 
             file.ClaudeSessionId = session.SessionId;
@@ -570,7 +640,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
             Status = "No terminal running for this session";
             return;
         }
-        ClaudeTerminal.Show(_settings, _terminal);
+        WinTerminal.Show(_settings, _terminal);
     }
 
     /// <summary>
@@ -578,12 +648,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     /// transcript stays on disk and `claude --resume` can still reach it.
     /// </summary>
     [RelayCommand]
-    private void NewClaudeSession()
+    private void ClearClaudeSession()
     {
         if (CurrentKey is null) return;
 
         var file = _store.ForFile(CurrentKey);
-        if (file.ClaudeSessionId is { Length: > 0 } old) ClaudeTerminal.Forget(old);
+        if (file.ClaudeSessionId is { Length: > 0 } old) WinTerminal.Forget(old);
 
         file.ClaudeSessionId = null;
         file.TerminalPid = null;
@@ -593,6 +663,68 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         _terminal = null;
         UpdateTerminalLabel();
         Status = "Next start opens a new Claude Code conversation for this session";
+    }
+
+    /// <summary>
+    /// Attaches a conversation to this file by typing its id in.
+    ///
+    /// ClaudeLog normally mints the GUID itself, so a file only has one if the app started it —
+    /// but a year of sessions predates the app, and they are all still on disk under
+    /// `.claude\projects\&lt;slug&gt;\&lt;id&gt;.jsonl`. Pasting one of those ids here is what makes the
+    /// next start `--resume` that conversation instead of opening an empty one next to it.
+    ///
+    /// The directory is pinned at the same time, because an id alone doesn't locate a transcript:
+    /// the path is the session directory's slug plus the id, and the check below is the only
+    /// honest confirmation that the pair actually names something on disk.
+    /// </summary>
+    [RelayCommand]
+    private async Task SetClaudeSession()
+    {
+        if (CurrentKey is null || AskForText is null) return;
+
+        var file = _store.ForFile(CurrentKey);
+        var current = file.ClaudeSessionId ?? string.Empty;
+        var dir = SessionDir;
+
+        var answer = await AskForText("Claude session id",
+            dir.Length > 0
+                ? $"Conversation id for this file. Its transcript is looked for under {dir}:"
+                : "Conversation id for this file:",
+            current, current.Length,
+            value => Guid.TryParse(value.Trim(), out _)
+                ? null
+                : "Claude Code session ids are UUIDs — copy one from the file name in .claude\\projects.");
+
+        if (answer is null) return;
+
+        // Canonical lowercase-hyphenated form: that is how Claude Code names the transcript, and
+        // TranscriptPath does a plain string join.
+        var id = Guid.Parse(answer.Trim()).ToString();
+
+        if (file.ClaudeSessionId is { Length: > 0 } old && !string.Equals(old, id, StringComparison.OrdinalIgnoreCase))
+        {
+            WinTerminal.Forget(old);
+        }
+
+        file.ClaudeSessionId = id;
+        if (dir.Length > 0) file.SessionDir = dir;
+        file.TerminalPid = null;
+        _store.MarkDirty();
+        _store.Save();
+
+        _terminal = null;
+        RestoreTerminal();
+
+        if (dir.Length == 0)
+        {
+            Status = $"This file resumes {id[..8]} — set a session directory before starting it";
+            return;
+        }
+
+        var transcript = WinTerminal.TranscriptPath(_settings.ClaudeProjectsDir, dir, id);
+        Status = File.Exists(transcript)
+            ? $"This file resumes {id[..8]} — found its transcript under {dir}"
+            : $"This file resumes {id[..8]} — no transcript for it under {dir} yet";
     }
 
     /// <summary>Changes where this session's Claude Code runs, for this file only.</summary>
@@ -687,7 +819,7 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     /// </summary>
     private void Confirm(TerminalSession session, DateTimeOffset sentAt, string label)
     {
-        var transcript = ClaudeTerminal.TranscriptPath(_settings.ClaudeProjectsDir, session.Dir, session.SessionId);
+        var transcript = WinTerminal.TranscriptPath(_settings.ClaudeProjectsDir, session.Dir, session.SessionId);
 
         _ = Task.Run(async () =>
         {
@@ -1033,11 +1165,12 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         // The terminal can be closed from under the app at any moment, and a Send button that
         // still looks armed after that is worse than no button. Checked on the second, not on the
         // click, so the pill goes grey when the window closes rather than when it is next used.
-        if (TerminalRunning != (_terminal is not null && ClaudeTerminal.IsAlive(_terminal.Pid)))
+        if (TerminalRunning != (_terminal is not null && WinTerminal.IsAlive(_terminal.Pid)))
         {
             UpdateTerminalLabel();
         }
 
+        RefreshTerminalDots();
         _store.SaveIfDirty();
     }
 
@@ -1336,12 +1469,24 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         if (_doc is null || prompt is null || prompt.Index + 1 >= _doc.Prompts.Count) return;
 
         SaveEditorIfDirty();
-        _doc.MergeWithNext(prompt.Index);
-        _doc.Save();
-        _docStamp = File.GetLastWriteTimeUtc(_doc.Path);
-        ReloadPrompts();
-        SelectPromptAt(prompt.Index);
-        Status = "Merged with the next prompt";
+
+        // Every write to the log tree can fail on a file something else has open — see
+        // AtomicFile. SaveEditorIfDirty reports that in the status bar; these two used to let it
+        // out of a RelayCommand instead, which is an unhandled exception and a closed window.
+        try
+        {
+            _doc.MergeWithNext(prompt.Index);
+            _doc.Save();
+            _docStamp = File.GetLastWriteTimeUtc(_doc.Path);
+            ReloadPrompts();
+            SelectPromptAt(prompt.Index);
+            Status = "Merged with the next prompt";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Merge failed: {ex.Message}";
+            Log.Warn($"merge {_doc.Path}: {ex}");
+        }
     }
 
     [RelayCommand]
@@ -1351,14 +1496,23 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
         if (_doc is null || prompt is null) return;
 
         var index = prompt.Index;
-        Backups.Snapshot(_doc.Path);
-        _doc.DeletePrompt(index);
-        _doc.Save();
-        _docStamp = File.GetLastWriteTimeUtc(_doc.Path);
-        IsDirty = false;
-        ReloadPrompts();
-        SelectPromptAt(index);
-        Status = "Deleted prompt";
+
+        try
+        {
+            Backups.Snapshot(_doc.Path);
+            _doc.DeletePrompt(index);
+            _doc.Save();
+            _docStamp = File.GetLastWriteTimeUtc(_doc.Path);
+            IsDirty = false;
+            ReloadPrompts();
+            SelectPromptAt(index);
+            Status = "Deleted prompt";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Delete failed: {ex.Message}";
+            Log.Warn($"delete prompt in {_doc.Path}: {ex}");
+        }
     }
 
     [RelayCommand]
@@ -1369,6 +1523,60 @@ public sealed partial class MainWindowViewModel : ViewModelBase, IDisposable
     {
         _settings.Save();
         Shell.OpenFile(Paths.SettingsFile);
+    }
+
+    /// <summary>
+    /// The settings dialog. It edits a copy, so nothing here happens until Save comes back with
+    /// one — and then the whole copy lands at once rather than field by field.
+    /// </summary>
+    [RelayCommand]
+    private async Task OpenSettings()
+    {
+        if (EditSettings is null)
+        {
+            OpenSettingsFile();
+            return;
+        }
+
+        var edited = await EditSettings(_settings.Clone());
+        if (edited is null) return;
+
+        var rootChanged = !string.Equals(edited.LogRoot, _settings.LogRoot, StringComparison.OrdinalIgnoreCase);
+
+        _settings.CopyFrom(edited);
+        _settings.Save();
+
+        // Through the property, so the panel actually updates. Its setter writes settings.json a
+        // second time when the dialog changed this one, with the same content it was just given.
+        ShowManualReset = _settings.ShowManualReset;
+        RefreshManualResetVisibility();
+        OnPropertyChanged(nameof(LogRoot));
+        UpdateTerminalLabel();
+
+        if (rootChanged)
+        {
+            // The watcher is bound to the folder it was created with, and every key in state.json
+            // is relative to the root — so the tree has to be rebuilt against the new one.
+            SaveEditorIfDirty();
+            _treeWatcher?.Dispose();
+            _treeWatcher = null;
+            RefreshTree();
+            BuildWordIndex();
+        }
+
+        Status = rootChanged ? $"Settings saved · now reading {_settings.LogRoot}" : "Settings saved";
+    }
+
+    /// <summary>The app-data folder: settings.json, state.json, the backups and claudelog.log.</summary>
+    [RelayCommand]
+    private void OpenAppData() => Shell.OpenFolder(Paths.AppDataDir);
+
+    /// <summary>What got swallowed. A GUI app that degrades quietly needs this one click away.</summary>
+    [RelayCommand]
+    private void OpenLogFile()
+    {
+        if (File.Exists(Log.File)) Shell.OpenFile(Log.File);
+        else Status = "Nothing has been logged yet";
     }
 
     [RelayCommand]

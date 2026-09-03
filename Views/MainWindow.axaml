@@ -37,7 +37,18 @@
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
           <Button Content="Log folder" Command="{Binding OpenLogRootCommand}" />
           <Button Content="Refresh" Command="{Binding RefreshTreeCommand}" />
-          <Button Content="settings.json" Command="{Binding OpenSettingsFileCommand}" />
+          <!-- The dialog covers the settings worth a control; the dropdown keeps the file itself
+               one click away, because the per-project maps are still edited there. -->
+          <SplitButton Content="Settings" Command="{Binding OpenSettingsCommand}"
+                       ToolTip.Tip="Edit settings">
+            <SplitButton.Flyout>
+              <MenuFlyout Placement="BottomEdgeAlignedRight">
+                <MenuItem Header="Edit settings.json…" Command="{Binding OpenSettingsFileCommand}" />
+                <MenuItem Header="Open app data folder" Command="{Binding OpenAppDataCommand}" />
+                <MenuItem Header="Open claudelog.log" Command="{Binding OpenLogFileCommand}" />
+              </MenuFlyout>
+            </SplitButton.Flyout>
+          </SplitButton>
         </StackPanel>
       </Grid>
     </Border>
@@ -50,16 +61,20 @@
                 Margin="4" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
         <TreeView.ItemTemplate>
           <TreeDataTemplate ItemsSource="{Binding Children}" DataType="vm:TreeNodeViewModel">
-            <Grid ColumnDefinitions="Auto,*,Auto,Auto" Height="26">
+            <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto" Height="26">
               <TextBlock Grid.Column="0" Text="{Binding Icon}" FontSize="11" Margin="0,0,6,0"
                          VerticalAlignment="Center" />
               <TextBlock Grid.Column="1" Text="{Binding Name}" VerticalAlignment="Center"
                          TextTrimming="CharacterEllipsis" />
-              <TextBlock Grid.Column="2" Text="{Binding Detail}" Classes="dim" FontSize="10"
+              <!-- Claude Code is running for this session right now — not just the open one. -->
+              <Ellipse Grid.Column="2" Width="7" Height="7" Fill="#4CAF50" Margin="6,0,0,0"
+                        VerticalAlignment="Center" IsVisible="{Binding HasRunningTerminal}"
+                        ToolTip.Tip="Claude Code is running for this session" />
+              <TextBlock Grid.Column="3" Text="{Binding Detail}" Classes="dim" FontSize="10"
                          Margin="6,0,4,0" MinWidth="38" TextAlignment="Right"
                          VerticalAlignment="Center" />
               <!-- The shortcut into Examples/ and Plans/ — always reachable, never clipped. -->
-              <Button Grid.Column="3" Content="&#x29C9;" FontSize="11" Padding="4,0" Margin="4,0,2,0"
+              <Button Grid.Column="4" Content="&#x29C9;" FontSize="11" Padding="4,0" Margin="4,0,2,0"
                       Background="Transparent" BorderThickness="0"
                       IsVisible="{Binding IsFolder}"
                       ToolTip.Tip="Open this folder in Explorer"
@@ -126,8 +141,11 @@
                 <Button.ContextMenu>
                   <ContextMenu>
                     <MenuItem Header="Show terminal" Command="{Binding ShowTerminalCommand}" />
-                    <MenuItem Header="New Claude session" Command="{Binding NewClaudeSessionCommand}" />
+                    <MenuItem Header="Clear Claude session" Command="{Binding ClearClaudeSessionCommand}" />
                     <Separator />
+                    <!-- For the sessions that predate the app: their transcripts are already on
+                         disk under .claude\projects, so the id is all that's missing. -->
+                    <MenuItem Header="Set session id…" Command="{Binding SetClaudeSessionCommand}" />
                     <MenuItem Header="Session directory…" Command="{Binding ChangeSessionDirCommand}" />
                   </ContextMenu>
                 </Button.ContextMenu>

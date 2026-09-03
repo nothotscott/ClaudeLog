@@ -26,6 +26,11 @@ public sealed partial class TreeNodeViewModel : ViewModelBase
 
     [ObservableProperty] private bool _isExpanded = true;
 
+    /// <summary>The small dot next to a session's name — its Claude Code terminal is alive right
+    /// now, as of the last check. Set by <see cref="MainWindowViewModel"/>, not computed here: the
+    /// node has no way to check a PID's aliveness on its own.</summary>
+    [ObservableProperty] private bool _hasRunningTerminal;
+
     /// <summary>
     /// The window this node belongs to. A ContextMenu lives in its own popup tree, so a binding
     /// inside one can't walk up to the TreeView and reach the main view model — the node itself is

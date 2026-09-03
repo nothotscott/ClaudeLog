@@ -2,6 +2,17 @@ using System.Diagnostics;
 
 namespace ClaudeLog.Core;
 
+/// <summary>
+/// The shell a session's Claude Code runs in. Named apart from <see cref="Shell"/> — that's the
+/// Explorer/taskbar helper — to keep two unrelated "shell" concepts from colliding on one name.
+/// See <see cref="WinTerminal"/>.
+/// </summary>
+public enum TerminalShell
+{
+    PowerShell,
+    GitBash,
+}
+
 /// <summary>A terminal ClaudeLog started, and the Claude Code conversation running inside it.</summary>
 public sealed record TerminalSession(string SessionId, string Dir, int Pid)
 {
@@ -23,9 +34,11 @@ public sealed record TerminalSession(string SessionId, string Dir, int Pid)
 ///
 /// The terminal is Windows Terminal by default but nothing here depends on it. The mechanism is
 /// the Win32 console, so any host that gives its tab a real console works, conhost included; the
-/// command line is a setting for exactly that reason.
+/// command line is a setting for exactly that reason. The tab's own shell — PowerShell or Git
+/// Bash — is a separate choice: it decides which launch script gets written and which of the two
+/// TerminalArgs templates is formatted, nothing else downstream cares which one ran.
 /// </summary>
-public static class ClaudeTerminal
+public static class WinTerminal
 {
     /// <summary>How long to wait for the launched shell to report its PID before giving up.</summary>
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(20);
@@ -77,19 +90,20 @@ public static class ClaudeTerminal
     /// Throws with a sentence worth showing in the status bar when it can't.
     /// </summary>
     public static async Task<TerminalSession> StartAsync(Settings settings, string sessionId, string dir,
-        string title, CancellationToken token = default)
+        string title, TerminalShell shell = TerminalShell.PowerShell, CancellationToken token = default)
     {
         if (!Directory.Exists(dir)) throw new DirectoryNotFoundException($"{dir} does not exist");
 
         Directory.CreateDirectory(Paths.TabsDir);
         var pidFile = Path.Combine(Paths.TabsDir, sessionId + ".pid");
-        var script = Path.Combine(Paths.TabsDir, sessionId + ".ps1");
+        var script = Path.Combine(Paths.TabsDir, sessionId + ScriptExtension(shell));
         Delete(pidFile);
 
         var resuming = File.Exists(TranscriptPath(settings.ClaudeProjectsDir, dir, sessionId));
-        File.WriteAllText(script, LaunchScript(settings.ClaudeExe, sessionId, pidFile, resuming));
+        File.WriteAllText(script, LaunchScript(shell, settings.ClaudeExe, sessionId, pidFile, resuming));
 
-        var args = string.Format(settings.TerminalArgs,
+        var argsTemplate = shell == TerminalShell.GitBash ? settings.TerminalArgsGitBash : settings.TerminalArgs;
+        var args = string.Format(argsTemplate,
             TerminalSession.WindowNameFor(sessionId), Quote(title), Quote(dir), Quote(script));
 
         Start(settings.TerminalExe, args);
@@ -102,21 +116,30 @@ public static class ClaudeTerminal
             Log.Warn($"terminal did not report a pid: {settings.TerminalExe} {args}");
             throw new TimeoutException(
                 $"The terminal didn't start within {StartTimeout.TotalSeconds:0}s — " +
-                $"check TerminalExe and TerminalArgs in settings.json (logged the command line)");
+                $"check TerminalExe/TerminalArgsGitBash and TerminalArgs in settings.json (logged the command line)");
         }
 
         return new TerminalSession(sessionId, dir, pid.Value);
     }
 
+    private static string ScriptExtension(TerminalShell shell) => shell == TerminalShell.GitBash ? ".sh" : ".ps1";
+
     /// <summary>
     /// The script the terminal tab runs. It exists as a file rather than as a command line because
-    /// Windows Terminal treats `;` as its own argument separator, so any inline PowerShell that
+    /// Windows Terminal treats `;` as its own argument separator, so any inline shell code that
     /// needs a statement separator has to be escaped through two layers of quoting to survive.
     ///
-    /// Reporting `$PID` is what makes the tab addressable: the shell and Claude Code share one
-    /// console, so writing to the shell's console is writing to Claude Code's input.
+    /// Reporting the shell's own PID is what makes the tab addressable: the shell and Claude Code
+    /// share one console, so writing to the shell's console is writing to Claude Code's input.
     /// </summary>
-    private static string LaunchScript(string claudeExe, string sessionId, string pidFile, bool resuming)
+    private static string LaunchScript(TerminalShell shell, string claudeExe, string sessionId, string pidFile,
+        bool resuming) => shell switch
+    {
+        TerminalShell.GitBash => LaunchScriptBash(claudeExe, sessionId, pidFile, resuming),
+        _ => LaunchScriptPowerShell(claudeExe, sessionId, pidFile, resuming),
+    };
+
+    private static string LaunchScriptPowerShell(string claudeExe, string sessionId, string pidFile, bool resuming)
     {
         var flag = resuming ? "--resume" : "--session-id";
 
@@ -134,6 +157,40 @@ public static class ClaudeTerminal
             }
 
             """.ReplaceLineEndings("\r\n");
+    }
+
+    /// <summary>
+    /// Git Bash's own bash.exe, not WSL — it runs as an ordinary Windows console process, so the
+    /// same PID-in-a-file mechanism the PowerShell script uses works, with one trap: **`$$` is not
+    /// the Windows PID.** MSYS2 (what Git for Windows' bash is built on) keeps its own emulated PID
+    /// space, and `$$` reports a PID from that space — confirmed on a real machine, where it named a
+    /// process `Get-Process` had never heard of. `/proc/$$/winpid` is MSYS2's own escape hatch back
+    /// to the real one, and that's what has to land in the PID file: everything downstream —
+    /// <see cref="IsAlive"/>, and `ConsoleInput`'s `WriteConsoleInput` — takes a Win32 PID, not an
+    /// MSYS one. Windows-style paths (backslashes and all) are passed through single-quoted, which
+    /// MSYS2's bash accepts for file redirection and command lookup exactly as it accepts POSIX
+    /// ones. `--login` matters more here than the PowerShell profile flags do: a non-login shell's
+    /// PATH often lacks whatever put `claude` there (nvm, a global npm prefix), and login is how a
+    /// real interactive Git Bash gets it.
+    /// </summary>
+    private static string LaunchScriptBash(string claudeExe, string sessionId, string pidFile, bool resuming)
+    {
+        var flag = resuming ? "--resume" : "--session-id";
+
+        return $"""
+            #!/usr/bin/env bash
+            # Written by ClaudeLog. Recreated on every launch; editing it has no lasting effect.
+            if [ -r /proc/$$/winpid ]; then cat /proc/$$/winpid > '{pidFile}'; else echo $$ > '{pidFile}'; fi
+            '{claudeExe}' {flag} '{sessionId}'
+            code=$?
+            rm -f '{pidFile}'
+            if [ $code -ne 0 ]; then
+                echo
+                echo "Claude Code exited with $code. Press any key to close."
+                read -n 1 -s -r
+            fi
+
+            """.ReplaceLineEndings("\n");
     }
 
     /// <summary>
@@ -191,11 +248,16 @@ public static class ClaudeTerminal
         return rememberedPid is not null && IsAlive(rememberedPid.Value) ? rememberedPid : null;
     }
 
-    /// <summary>Forgets a session's launch artefacts. The conversation itself is untouched.</summary>
+    /// <summary>
+    /// Forgets a session's launch artefacts. The conversation itself is untouched. Both script
+    /// extensions are cleaned up unconditionally — which shell a session last used isn't tracked
+    /// here, and deleting a file that was never written is a no-op.
+    /// </summary>
     public static void Forget(string sessionId)
     {
         Delete(Path.Combine(Paths.TabsDir, sessionId + ".pid"));
         Delete(Path.Combine(Paths.TabsDir, sessionId + ".ps1"));
+        Delete(Path.Combine(Paths.TabsDir, sessionId + ".sh"));
     }
 
     /// <summary>Windows Terminal splits its own arguments on spaces, so paths have to be quoted.</summary>

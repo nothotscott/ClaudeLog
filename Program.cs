@@ -50,11 +50,16 @@ internal static class Program
             var window = new Views.MainWindow();
             var dialog = new Views.TextPrompt();
 
+            // The settings dialog binds to Settings with compiled bindings, so constructing it
+            // with a real one loads its XAML and exercises every one of those bindings' targets.
+            var settings = new Views.SettingsDialog { DataContext = Settings.Load() };
+
             // The leading "ok" is what CI matches on — reaching this line at all means every
             // window constructed. The rest of the sentence is for a human reading the log and can
             // be reworded; the sentinel and the type names cannot.
             Console.WriteLine($"ok  platform started, {window.GetType().Name} " +
-                              $"({window.Width:0}x{window.Height:0}) and {dialog.GetType().Name} loaded");
+                              $"({window.Width:0}x{window.Height:0}), {dialog.GetType().Name} " +
+                              $"and {settings.GetType().Name} loaded");
             return 0;
         }
         catch (Exception ex)

@@ -147,6 +147,16 @@ public sealed class StateStore
         }
     }
 
+    /// <summary>The stored state for a file, or null when it has never been opened by the app. Read
+    /// -only — unlike <see cref="ForFile"/>, this never creates an entry just by being asked.</summary>
+    public FileState? PeekFile(string relativePath)
+    {
+        lock (_gate)
+        {
+            return State.Files.GetValueOrDefault(relativePath);
+        }
+    }
+
     public PromptState? PeekPrompt(string relativePath, string hash)
     {
         lock (_gate)
@@ -259,8 +269,7 @@ public sealed class StateStore
 
             var tmp = Paths.StateFile + ".tmp";
             File.WriteAllText(tmp, json);
-            if (File.Exists(Paths.StateFile)) File.Replace(tmp, Paths.StateFile, null);
-            else File.Move(tmp, Paths.StateFile);
+            AtomicFile.Replace(tmp, Paths.StateFile);
         }
         catch (Exception ex)
         {

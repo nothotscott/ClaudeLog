@@ -25,6 +25,8 @@ public static class SelfTest
         HashIgnoresTrailingWhitespace();
         SaveIsByteIdentical();
         SavePreservesCrlfAndAbsentBom();
+        SaveDoesNotAccumulateTrailingBlankLines();
+        SaveSurvivesAReaderHoldingTheFile();
         AppendUsesTheModeSeparator();
         ConvertToModernKeepsPromptCount();
         QuotaReadsARejectedRecord();
@@ -37,6 +39,9 @@ public static class SelfTest
         TranscriptPathFindsASessionOnDisk();
         TranscriptReadsTheLastPromptTime();
         SessionDirFallsBackFromProjectToDefaultToSource();
+        ShellForFallsBackToTheDefault();
+        SettingsNormalizeRestoresClaudeProjectsDir();
+        SettingsCloneAndCopyCarryEveryField();
         TerminalSessionSurvivesAReload();
         SessionsAreSortedNewestFirst();
         SessionNamesAreValidated();
@@ -154,6 +159,61 @@ public static class SelfTest
             True(!text.Contains('\n') || !text.Replace("\r\n", "").Contains('\n'), "no bare LF is introduced");
             True(!text.EndsWith('\n'), "a missing trailing newline stays missing");
             True(text.Contains("Edited second prompt."), "the edit was written");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// The editor holds the blank lines someone is in the middle of typing at the end of a prompt;
+    /// the file must not collect one more of them on every Ctrl+S. Two saves of the same text is
+    /// the shape that used to grow the file — the range spliced out is trimmed, the text spliced
+    /// in was not.
+    /// </summary>
+    private static void SaveDoesNotAccumulateTrailingBlankLines()
+    {
+        var (path, _) = WriteSample("First prompt.\r\n\r\nSecond prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Legacy);
+            doc.ReplacePrompt(0, "First prompt.\n\n\n");
+            var afterOne = doc.Text;
+
+            doc.ReplacePrompt(0, "First prompt.\n\n\n");
+            Equal(afterOne, doc.Text, "saving trailing blank lines twice doesn't grow the file");
+            Equal(2, doc.Prompts.Count, "and doesn't split the prompt in two");
+            Equal("First prompt.", doc.Prompts[0].Text, "the prompt keeps its own text");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// The save that used to throw <c>"Unable to remove the file to be replaced"</c> out of a
+    /// command with no try/catch around it. A handle that allows reading and writing but not
+    /// deleting is exactly what Syncthing and the indexer hold, and it is what File.Replace can't
+    /// get past — see <see cref="AtomicFile"/>.
+    /// </summary>
+    private static void SaveSurvivesAReaderHoldingTheFile()
+    {
+        var (path, _) = WriteSample("First prompt.\r\n\r\nSecond prompt.");
+        try
+        {
+            var doc = SessionDocument.Load(path, ParseMode.Legacy);
+            doc.ReplacePrompt(1, "Edited while held open.");
+
+            using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                doc.Save();
+            }
+
+            var tmp = Path.Combine(Path.GetDirectoryName(path)!, "." + Path.GetFileName(path) + ".claudelog.tmp");
+            True(File.ReadAllText(path).Contains("Edited while held open."), "a save gets past a reader on the file");
+            True(!File.Exists(tmp), "and leaves no temp file behind");
         }
         finally
         {
@@ -293,24 +353,24 @@ public static class SelfTest
     /// </summary>
     private static void SlugMatchesClaudeCodesProjectFolders()
     {
-        Equal("D--Source", ClaudeTerminal.SlugFor(@"D:\Source"), "slug for a drive root");
-        Equal("D--Source-BrandBully", ClaudeTerminal.SlugFor(@"D:\Source\BrandBully"), "slug for a project");
-        Equal("C--Users-Scott", ClaudeTerminal.SlugFor(@"C:\Users\Scott"), "slug for a profile directory");
-        Equal("D--Source-repos-FileFixup", ClaudeTerminal.SlugFor(@"D:\Source\repos\FileFixup"),
+        Equal("D--Source", WinTerminal.SlugFor(@"D:\Source"), "slug for a drive root");
+        Equal("D--Source-BrandBully", WinTerminal.SlugFor(@"D:\Source\BrandBully"), "slug for a project");
+        Equal("C--Users-Scott", WinTerminal.SlugFor(@"C:\Users\Scott"), "slug for a profile directory");
+        Equal("D--Source-repos-FileFixup", WinTerminal.SlugFor(@"D:\Source\repos\FileFixup"),
             "slug for a nested project");
 
         // A hyphen in a folder name is already the replacement character, so it survives unchanged.
-        Equal("D--Source-proxmox-control", ClaudeTerminal.SlugFor(@"D:\Source\proxmox-control"),
+        Equal("D--Source-proxmox-control", WinTerminal.SlugFor(@"D:\Source\proxmox-control"),
             "slug leaves an existing hyphen alone");
 
         // A trailing separator is not part of the name Claude Code sees.
-        Equal(ClaudeTerminal.SlugFor(@"D:\Source"), ClaudeTerminal.SlugFor(@"D:\Source\"),
+        Equal(WinTerminal.SlugFor(@"D:\Source"), WinTerminal.SlugFor(@"D:\Source\"),
             "a trailing backslash doesn't change the slug");
     }
 
     private static void TranscriptPathFindsASessionOnDisk()
     {
-        var path = ClaudeTerminal.TranscriptPath(@"C:\p", @"D:\Source", "0434f382-4f95-47cf-b6fd-7d4ab748f378");
+        var path = WinTerminal.TranscriptPath(@"C:\p", @"D:\Source", "0434f382-4f95-47cf-b6fd-7d4ab748f378");
         Equal(Path.Combine(@"C:\p", "D--Source", "0434f382-4f95-47cf-b6fd-7d4ab748f378.jsonl"), path,
             "transcript path is projects/slug/session.jsonl");
     }
@@ -377,6 +437,72 @@ public static class SelfTest
             "a project's own session directory wins over the default");
         Equal(@"D:\Source", settings.SessionDirFor("DevMem"),
             "and leaves the other projects on the default");
+    }
+
+    /// <summary>Same fallback shape as <see cref="SessionDirFor"/>, for which shell a session runs in.</summary>
+    private static void ShellForFallsBackToTheDefault()
+    {
+        var settings = new Settings { DefaultShell = TerminalShell.PowerShell };
+
+        Equal(TerminalShell.PowerShell, settings.ShellFor("BrandBully"), "with nothing configured, PowerShell");
+
+        settings.DefaultShell = TerminalShell.GitBash;
+        Equal(TerminalShell.GitBash, settings.ShellFor("BrandBully"), "changing the default changes every project");
+
+        settings.ProjectShells["BrandBully"] = TerminalShell.PowerShell;
+        Equal(TerminalShell.PowerShell, settings.ShellFor("BrandBully"), "a project's own shell wins over the default");
+        Equal(TerminalShell.GitBash, settings.ShellFor("DevMem"), "and leaves the other projects on the default");
+    }
+
+    /// <summary>
+    /// A `string` property is only non-null at compile time — System.Text.Json will still write a
+    /// JSON `null` straight into it, which is exactly what a hand-trimmed "clean" settings.json can
+    /// contain. Every terminal launch reads ClaudeProjectsDir, so a null here has to be repaired
+    /// before it reaches <see cref="WinTerminal"/>, not discovered when a session fails to start.
+    /// </summary>
+    private static void SettingsNormalizeRestoresClaudeProjectsDir()
+    {
+        Equal(Paths.DefaultClaudeProjectsDir, Settings.Normalize(new Settings { ClaudeProjectsDir = null! }).ClaudeProjectsDir,
+            "a null ClaudeProjectsDir falls back to the default");
+        Equal(Paths.DefaultClaudeProjectsDir, Settings.Normalize(new Settings { ClaudeProjectsDir = "" }).ClaudeProjectsDir,
+            "so does an empty one");
+
+        const string custom = @"C:\custom\projects";
+        Equal(custom, Settings.Normalize(new Settings { ClaudeProjectsDir = custom }).ClaudeProjectsDir,
+            "a real value is left alone");
+    }
+
+    /// <summary>
+    /// What the settings dialog is built on: it edits a detached copy, and Save puts that copy
+    /// back into the instance the whole app is already holding. A field missed by either half is
+    /// a setting that silently won't stick, which is the failure mode a dialog over a JSON file
+    /// has to be proof against — hence CopyFrom reflecting over the type rather than listing it.
+    /// </summary>
+    private static void SettingsCloneAndCopyCarryEveryField()
+    {
+        var original = new Settings
+        {
+            LogRoot = @"C:\logs",
+            SubmitDelayMs = 900,
+            AutoSendOnReset = true,
+            DefaultShell = TerminalShell.GitBash,
+            NewFileMode = ParseMode.Legacy,
+            ProjectSources = { ["CallTree"] = @"D:\Source\repos\CallTree" },
+        };
+
+        var copy = original.Clone();
+        copy.LogRoot = @"C:\elsewhere";
+        Equal(@"C:\logs", original.LogRoot, "the clone is detached — editing it doesn't touch the original");
+        Equal(900, copy.SubmitDelayMs, "the clone carries the scalar settings");
+        Equal(@"D:\Source\repos\CallTree", copy.ProjectSources["CallTree"], "and the maps");
+
+        var live = new Settings();
+        live.CopyFrom(copy);
+        Equal(@"C:\elsewhere", live.LogRoot, "CopyFrom applies the edit");
+        Equal(TerminalShell.GitBash, live.DefaultShell, "and the enums");
+        Equal(ParseMode.Legacy, live.NewFileMode, "both of them");
+        True(live.AutoSendOnReset, "and the flags");
+        Equal(@"D:\Source\repos\CallTree", live.ProjectSources["CallTree"], "and the maps it never showed");
     }
 
     /// <summary>

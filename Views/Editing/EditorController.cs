@@ -1,6 +1,8 @@
 using System.ComponentModel;
+using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using AvaloniaEdit;
@@ -24,6 +26,9 @@ public sealed class EditorController : IDisposable
     private static readonly TimeSpan SpellDelay = TimeSpan.FromMilliseconds(400);
 
     private const int MinPrefix = 3;
+
+    /// <summary>Windows will offer a dozen; a right-click menu is not the place for the tail of that list.</summary>
+    private const int MaxSuggestions = 6;
 
     private readonly TextEditor _editor;
     private readonly MainWindowViewModel _vm;
@@ -54,7 +59,10 @@ public sealed class EditorController : IDisposable
         _editor.TextChanged += OnTextChanged;
         _editor.TextArea.TextEntered += OnTextEntered;
         _editor.AddHandler(InputElement.KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
+        _editor.AddHandler(InputElement.PointerPressedEvent, OnPointerPressed, RoutingStrategies.Tunnel);
         _vm.PropertyChanged += OnViewModelChanged;
+
+        _editor.ContextMenu = BuildContextMenu();
 
         ApplyTheme();
         _editor.ActualThemeVariantChanged += (_, _) => ApplyTheme();
@@ -91,11 +99,18 @@ public sealed class EditorController : IDisposable
         _editor.CaretOffset = _editor.Document.TextLength;
     }
 
+    /// <summary>
+    /// Replaces the whole document, keeping the caret where it was. The offset has to be read
+    /// *before* the assignment: replacing the text moves the caret itself, so reading it
+    /// afterwards and clamping that is a no-op that leaves the caret at the end.
+    /// </summary>
     private void PushToEditor(string text)
     {
+        var caret = _editor.CaretOffset;
+
         _syncing = true;
         _editor.Document.Text = text;
-        _editor.CaretOffset = Math.Min(_editor.Document.TextLength, _editor.CaretOffset);
+        _editor.CaretOffset = Math.Min(_editor.Document.TextLength, caret);
         _syncing = false;
 
         Recolorize();
@@ -142,6 +157,106 @@ public sealed class EditorController : IDisposable
         _errors.FirstOrDefault(e => offset >= e.Start && offset <= e.Start + e.Length) is { Length: > 0 } hit
             ? hit
             : null;
+
+    // ------------------------------------------------------- context menu
+
+    /// <summary>
+    /// The right-click menu every word processor has: the spellings for the word under the
+    /// pointer, then the editing commands.
+    ///
+    /// One menu is built once and refills itself on <c>Opening</c>, rather than a fresh menu per
+    /// click — a ContextMenu subscribes to its control's ContextRequested when it is *assigned*,
+    /// so a menu created while handling that event has already missed it and never opens.
+    /// </summary>
+    private ContextMenu BuildContextMenu()
+    {
+        var menu = new ContextMenu();
+        menu.Opening += (_, _) => menu.ItemsSource = ContextItems();
+        return menu;
+    }
+
+    /// <summary>
+    /// Right-clicking doesn't move the caret on its own, so the word the menu is about has to
+    /// come from where the pointer is — otherwise the suggestions belong to wherever the caret
+    /// happened to be left. A click inside the selection is left alone: that one is on its way to
+    /// Cut or Copy, and moving the caret would clear what it is about to act on.
+    /// </summary>
+    private void OnPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        var point = e.GetCurrentPoint(_editor);
+        if (!point.Properties.IsRightButtonPressed) return;
+
+        if (_editor.GetPositionFromPoint(point.Position) is not { } hit) return;
+        var offset = _editor.Document.GetOffset(hit.Location);
+
+        var selectionStart = _editor.SelectionStart;
+        var selectionEnd = selectionStart + _editor.SelectionLength;
+        if (_editor.SelectionLength > 0 && offset >= selectionStart && offset <= selectionEnd) return;
+
+        _editor.CaretOffset = offset;
+    }
+
+    private List<Control> ContextItems()
+    {
+        var items = new List<Control>();
+
+        if (ErrorAt(_editor.CaretOffset) is { } error && error.Start + error.Length <= _editor.Document.TextLength)
+        {
+            var word = _editor.Text.Substring(error.Start, error.Length);
+            var suggestions = _spelling.Suggest(word).Take(MaxSuggestions).ToList();
+
+            foreach (var suggestion in suggestions)
+            {
+                var replacement = suggestion;
+                items.Add(Item(replacement, () => Correct(error.Start, error.Length, replacement),
+                    FontWeight.SemiBold));
+            }
+
+            if (suggestions.Count == 0)
+            {
+                items.Add(new MenuItem { Header = "No spelling suggestions", IsEnabled = false });
+            }
+
+            items.Add(Item($"Add “{word}” to dictionary", () =>
+            {
+                _spelling.AddToDictionary(word);
+                RunSpellCheck();
+                _vm.Status = $"Added \"{word}\" to the Windows dictionary";
+            }));
+
+            items.Add(new Separator());
+        }
+
+        var hasSelection = _editor.SelectionLength > 0;
+        items.Add(Item("Cut", () => _editor.Cut(), enabled: hasSelection));
+        items.Add(Item("Copy", () => _editor.Copy(), enabled: hasSelection));
+        items.Add(Item("Paste", () => _editor.Paste()));
+        items.Add(new Separator());
+        items.Add(Item("Select all", () => _editor.SelectAll(), enabled: _editor.Document.TextLength > 0));
+
+        return items;
+    }
+
+    private static MenuItem Item(string header, Action action, FontWeight weight = FontWeight.Normal,
+        bool enabled = true)
+    {
+        var item = new MenuItem { Header = header, FontWeight = weight, IsEnabled = enabled };
+        item.Click += (_, _) => action();
+        return item;
+    }
+
+    /// <summary>
+    /// Applies a suggestion. It goes through the document rather than through the view model so
+    /// the edit lands in the undo stack and marks the prompt dirty like any other typing would.
+    /// </summary>
+    private void Correct(int start, int length, string replacement)
+    {
+        if (start + length > _editor.Document.TextLength) return;
+
+        _editor.Document.Replace(start, length, replacement);
+        _editor.CaretOffset = start + replacement.Length;
+        RunSpellCheck();
+    }
 
     // --------------------------------------------------------- completion
 
@@ -282,6 +397,7 @@ public sealed class EditorController : IDisposable
         _spellTimer.Stop();
         _editor.TextChanged -= OnTextChanged;
         _editor.TextArea.TextEntered -= OnTextEntered;
+        _editor.RemoveHandler(InputElement.PointerPressedEvent, OnPointerPressed);
         _vm.PropertyChanged -= OnViewModelChanged;
         _checker.Dispose();
     }

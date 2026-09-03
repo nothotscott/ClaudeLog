@@ -1,0 +1,111 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:core="using:ClaudeLog.Core"
+        x:Class="ClaudeLog.Views.SettingsDialog"
+        x:DataType="core:Settings"
+        Title="Settings"
+        Width="620" Height="700"
+        MinWidth="520" MinHeight="420"
+        ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner">
+
+  <Window.Styles>
+    <!-- One label above one control, the same way down the whole dialog. -->
+    <Style Selector="TextBlock.field">
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Margin" Value="0,0,0,2" />
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="FontSize" Value="11" />
+      <Setter Property="Opacity" Value="0.6" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Margin" Value="0,2,0,0" />
+    </Style>
+    <Style Selector="TextBlock.section">
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Opacity" Value="0.7" />
+      <Setter Property="Margin" Value="0,14,0,4" />
+    </Style>
+    <Style Selector="TextBox">
+      <Setter Property="FontFamily" Value="Cascadia Mono,Consolas,Menlo,monospace" />
+      <Setter Property="FontSize" Value="12" />
+    </Style>
+  </Window.Styles>
+
+  <Grid RowDefinitions="*,Auto">
+
+    <ScrollViewer Grid.Row="0" Padding="18,14,18,14">
+      <StackPanel Spacing="2">
+
+        <TextBlock Classes="section" Text="FOLDERS" Margin="0,0,0,4" />
+
+        <TextBlock Classes="field" Text="Log root" />
+        <TextBox Text="{Binding LogRoot}" />
+        <TextBlock Classes="hint" Text="The folder of projects and session files this app edits." />
+
+        <TextBlock Classes="field" Text="Default session directory" Margin="0,10,0,2" />
+        <TextBox Text="{Binding DefaultSessionDir}" />
+        <TextBlock Classes="hint"
+                   Text="Where Claude Code is launched for a project that doesn't name its own. Empty means the project's own source folder." />
+
+        <TextBlock Classes="section" Text="PROMPTS" />
+
+        <TextBlock Classes="field" Text="Separator for new files" />
+        <ComboBox x:Name="NewFileMode" SelectedItem="{Binding NewFileMode}" HorizontalAlignment="Stretch" />
+        <TextBlock Classes="hint"
+                   Text="Existing files keep the mode they were opened with; this is only what a file created here starts as." />
+
+        <CheckBox Content="Copying a prompt marks it sent" IsChecked="{Binding MarkSentOnCopy}" Margin="0,10,0,0" />
+        <CheckBox Content="Sending a prompt marks it sent" IsChecked="{Binding MarkSentOnSend}" />
+
+        <TextBlock Classes="section" Text="TERMINAL" />
+
+        <TextBlock Classes="field" Text="Default shell" />
+        <ComboBox x:Name="DefaultShell" SelectedItem="{Binding DefaultShell}" HorizontalAlignment="Stretch" />
+
+        <TextBlock Classes="field" Text="Claude Code executable" Margin="0,10,0,2" />
+        <TextBox Text="{Binding ClaudeExe}" />
+
+        <TextBlock Classes="field" Text="Terminal executable" Margin="0,10,0,2" />
+        <TextBox Text="{Binding TerminalExe}" />
+
+        <TextBlock Classes="field" Text="Delay before Enter (ms)" Margin="0,10,0,2" />
+        <TextBox x:Name="SubmitDelay" Text="{Binding SubmitDelayMs}" Width="120" HorizontalAlignment="Left" />
+        <TextBlock Classes="hint"
+                   Text="How long after the pasted prompt the submitting Enter is written. Too short and the Enter is swallowed into the paste." />
+
+        <CheckBox Content="Start a terminal automatically when a prompt is sent"
+                  IsChecked="{Binding AutoStartTerminal}" Margin="0,10,0,0" />
+
+        <TextBlock Classes="section" Text="SESSION LIMIT" />
+
+        <CheckBox Content="Show the manual reset-time entry" IsChecked="{Binding ShowManualReset}" />
+        <CheckBox Content="Flash the taskbar when the limit resets" IsChecked="{Binding FlashOnReset}" />
+        <CheckBox Content="Put the next queued prompt on the clipboard when it resets"
+                  IsChecked="{Binding StageClipboardOnReset}" />
+        <CheckBox Content="Send the next queued prompt when it resets" IsChecked="{Binding AutoSendOnReset}" />
+        <TextBlock Classes="hint"
+                   Text="Sending is the only thing here that acts unattended — the reset usually lands while you're away from the machine." />
+
+        <TextBlock Classes="hint" Margin="0,16,0,0"
+                   Text="Everything else — per-project session directories, shells and source folders, and the terminal command lines — lives in settings.json, on the dropdown next to this dialog's button." />
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Row="1" Padding="18,12" BorderThickness="0,1,0,0"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock x:Name="Error" Grid.Column="0" FontSize="11" TextWrapping="Wrap"
+                   VerticalAlignment="Center" IsVisible="False"
+                   Foreground="{DynamicResource SystemControlErrorTextForegroundBrush}" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button x:Name="Ok" Content="Save" IsDefault="True" MinWidth="90"
+                  HorizontalContentAlignment="Center" />
+          <Button x:Name="Cancel" Content="Cancel" IsCancel="True" MinWidth="90"
+                  HorizontalContentAlignment="Center" />
+        </StackPanel>
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

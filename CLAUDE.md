@@ -50,12 +50,12 @@ dotnet run -- --quota             # the detected session-limit reset
 dotnet run -- --usage             # the live session/weekly usage percentage
 dotnet run -- --state             # where settings and state live
 dotnet run -- --terminal          # each file's Claude session: directory, pid, last prompt
-dotnet run -- --terminal --start <dir>   # open one there; prints session id and pid
+dotnet run -- --terminal --start <dir> [--shell gitbash]   # open one there; prints session id and pid
 dotnet run -- --send <pid> <text>        # write one prompt into that terminal
 dotnet run -- --startup           # boot Avalonia and load MainWindow without showing it, then exit
 ```
 
-There is no test project. **`--selftest` is the regression net** — 102 checks over prompt splitting,
+There is no test project. **`--selftest` is the regression net** — 129 checks over prompt splitting,
 byte-exact saving, the quota record format, the state-store invariants, tree ordering and naming,
 the highlighting rules, the spelling filters (including a real round-trip through the Windows
 spell checker). Add to `SelfTest.cs` when changing any of those; it is far more useful than it
@@ -170,6 +170,24 @@ Deleting a prompt and converting a file both rewrite it with no undo, in a folde
 control, so `Backups.Snapshot` copies the file into `%LOCALAPPDATA%\ClaudeLog\backups\` first
 (10 kept per file). Ordinary edits aren't snapshotted — that's just typing.
 
+### Writing to the tree
+
+Every write goes through `AtomicFile.Replace`: temp file in the same directory, then swap. Two
+things in it are there because of real failures, both recorded in `claudelog.log`.
+
+- **`File.Replace` deletes the destination**, so it fails outright — *"Unable to remove the file to
+  be replaced"* — whenever anything holds the file open without `FILE_SHARE_DELETE`. Syncthing,
+  Notepad++, Defender and the search indexer are all reading this tree. It retries five times over
+  ~600 ms and then falls back to a plain overwrite, which needs *write* access where a replace
+  needs *delete* access and so gets past the common case. The temp file is never left behind.
+- **Every caller catches.** `MergeWithNext` and `DeletePrompt` used not to, which is what turned
+  that `IOException` into an unhandled exception out of a `RelayCommand` — the window closing with
+  a stack trace in the log and nothing on screen. A failed write belongs in the status bar.
+
+`SessionDocument.ReplacePrompt` trims blank lines off both ends of what it is given, because a
+prompt's line range never includes the ones around it. Splicing a trimmed range out and an
+untrimmed one back in adds a blank line to the file on *every* save of the same text.
+
 ## Detecting the session limit, and showing live usage
 
 Two independent, best-effort watchers feed the SESSION LIMIT panel, neither ever writing anything
@@ -230,7 +248,7 @@ that already has an id is resumed with `--resume` instead — chosen by whether 
 on disk, because `--session-id` on an existing session is an error.
 
 `FileState.SessionDir` is stored per file, not looked up per project, because it is half the path
-to the transcript: `ClaudeTerminal.SlugFor` turns `D:\Source` into `D--Source` (every non
+to the transcript: `WinTerminal.SlugFor` turns `D:\Source` into `D--Source` (every non
 -alphanumeric character becomes a hyphen — the same rule `QuotaWatcher` relies on). Changing a
 project's default directory later must not strand the sessions started under the old one.
 
@@ -239,14 +257,24 @@ feature for anyone who hasn't configured anything: a fresh install runs each pro
 its own source folder, and one `DefaultSessionDir` moves every project to a shared root at once.
 Scott's is `D:\Source`, because the root `CLAUDE.md` there already knows where every project is.
 
+**An id can also be typed in** — *Set session id…* on the terminal button's menu. Minting the GUID
+is right for a conversation this app starts, but a year of sessions predates the app and their
+transcripts are already under `.claude\projects`; without this, those files can only ever start a
+new conversation beside the one they belong to. `SetClaudeSession` pins `SessionDir` at the same
+time (an id alone doesn't locate a transcript — the path is the directory's slug plus the id),
+normalizes the GUID to the lowercase-hyphenated form Claude Code names the file with, and says
+whether that pair actually exists on disk rather than claiming success either way.
+
 ### Launch traps
 
-- **Windows Terminal treats `;` as its own argument separator**, so inline PowerShell needs
-  escaping through two layers of quoting. The tab runs a generated `.ps1` in `%LOCALAPPDATA%\
-  ClaudeLog\tabs\` instead — no separators, no nesting.
+- **Windows Terminal treats `;` as its own argument separator**, so inline shell code needs
+  escaping through two layers of quoting. The tab runs a generated `.ps1` (or `.sh`, for
+  `Shell.GitBash`) in `%LOCALAPPDATA%\ClaudeLog\tabs\` instead — no separators, no nesting.
 - **`wt.exe` hands the tab to the running Windows Terminal process and exits**, so the PID it
-  returns is worthless. The script reports `$PID` to a file, and that is polled. The shell and
-  Claude Code share one console, so writing to the shell's PID reaches Claude Code's input.
+  returns is worthless. The script reports its own PID to a file, and that is polled. The shell and
+  Claude Code share one console, so writing to the shell's PID reaches Claude Code's input. This
+  holds for Git Bash too — its `bash.exe` is an ordinary Windows console process, not WSL, so the
+  same PID-in-a-file mechanism and the same `ConsoleInput` delivery work unchanged.
 - **Claude Code marks its own environment.** A session that inherits `CLAUDE_CODE_CHILD_SESSION`
   and friends writes *no transcript at all* — the terminal opens, prompts arrive, and only the
   confirmation and the quota countdown quietly stop working. `Start` clears those variables, which
@@ -254,8 +282,25 @@ Scott's is `D:\Source`, because the root `CLAUDE.md` there already knows where e
   the app is launched from a Claude Code session, which is what "run the app" does.
 
 `ClaudeLog --terminal` lists every file's session, directory, PID and last recorded prompt;
-`--terminal --start <dir>` and `--send <pid> <text>` are the whole loop without the UI, and are how
-a wrong `TerminalArgs` shows itself.
+`--terminal --start <dir> [--shell gitbash]` and `--send <pid> <text>` are the whole loop without
+the UI, and are how a wrong `TerminalArgs`/`TerminalArgsGitBash` shows itself.
+
+### Shell: PowerShell or Git Bash
+
+`Settings.DefaultShell` picks PowerShell or Git Bash for every project; `ProjectShells` overrides
+it per project, the same shape as `ProjectSessionDirs`. `WinTerminal.StartAsync` takes the resolved
+`TerminalShell` — named apart from the unrelated `Core\Shell.cs` (Explorer/taskbar helper) — and
+picks the launch script and the `TerminalArgs` template from it — `TerminalArgs` for PowerShell,
+`TerminalArgsGitBash` for Git Bash. Nothing else in the launch or delivery path branches on it: both
+scripts report a PID the same way, and `ConsoleInput` writes to that PID regardless of which shell
+is reading it.
+
+The two script bodies live side by side in `WinTerminal` (`LaunchScriptPowerShell`,
+`LaunchScriptBash`) rather than behind an abstraction — they're a handful of lines each, and a
+shared "launch script" concept would have to parameterize the one thing that's actually different
+between them (the language), which is most of the file. The bash script always uses `--login`:
+without it, PATH often doesn't include wherever `claude` actually got installed (nvm, a global npm
+prefix), and a real interactive Git Bash session gets that from being a login shell.
 
 ## The editor
 
@@ -296,6 +341,31 @@ the filters, because the failure mode is silent noise rather than an error.
 
 Everything degrades: no spell-check service means no squiggles and a logged warning, not a crash.
 
+The **right-click menu** is the other way into all of it — suggestions for the word under the
+pointer, *Add to dictionary*, then cut/copy/paste/select-all. Two things about it:
+
+- **The menu is built once and refills itself in `Opening`.** A `ContextMenu` subscribes to its
+  control's `ContextRequested` when it is *assigned*, so a menu created while handling that event
+  has already missed it and never opens.
+- **Right-clicking doesn't move the caret**, so the word comes from the click point
+  (`GetPositionFromPoint`), set in a tunnelled `PointerPressed` before the menu opens. A click
+  inside an existing selection is left alone — that one is on its way to Cut or Copy.
+
+### The caret on save
+
+`EditorController.PushToEditor` replaces the whole document, and **the caret offset has to be read
+before the assignment** — replacing the text moves the caret, so reading it afterwards and clamping
+that keeps nothing.
+
+That alone isn't enough, because a save reparses the file and rebuilds every card, and re-selecting
+the prompt pushed the file's copy of the text back into the editor. That push is what moved the
+caret to the end on every `Ctrl+S`, and what took away the blank lines a writer had just typed at
+the end of a prompt (the parser trims them; the editor shouldn't). `MainWindowViewModel._keepEditorText`
+suppresses it — but **only when the file came back agreeing with the editor**. Writing a blank line
+into a legacy file can split one prompt into two, and there the editor holds text that no longer
+belongs to the prompt it is bound to; pushing the file's version is both honest and what stops a
+second `Ctrl+S` splicing the same text in twice.
+
 ## The prompt list
 
 The list shows every prompt **in full**, not as a one-line preview, so the pane reads like the
@@ -329,11 +399,12 @@ reaching for a `TopLevel`.
 | `Core\QuotaWatcher.cs` | Tails Claude Code transcripts for `quotaLimits.resetsAt`. Best-effort by design — see `skills/SessionIntegration/SKILL.md`. |
 | `Core\UsageWatcher.cs` | Polls Anthropic's usage endpoint for the live session/weekly percentage. Same skill, same best-effort rule. |
 | `Core\ConsoleInput.cs` | `WriteConsoleInput` into another process's console: bracketed paste, then Enter. |
-| `Core\ClaudeTerminal.cs` | Starts Claude Code in a terminal; session ids, project slugs, PID discovery. |
+| `Core\WinTerminal.cs` | Starts Claude Code in a terminal, PowerShell or Git Bash; session ids, project slugs, PID discovery. |
 | `Core\SessionTranscript.cs` | Reads back the session's own transcript to confirm a prompt landed. |
 | `Core\Settings.cs`, `Paths.cs` | settings.json and the `%LOCALAPPDATA%` locations. |
 | `Core\Shell.cs` | Explorer open/reveal and the `FlashWindowEx` taskbar flash. |
 | `Core\Backups.cs` | Pre-destructive-write snapshots, kept in `%LOCALAPPDATA%`, out of the synced tree. |
+| `Core\AtomicFile.cs` | The temp-file-then-swap every save ends in, and the retries a watched folder needs. |
 | `Core\SpellChecker.cs` | COM interop onto the Windows spell-check service. |
 | `Core\SpellCheckPass.cs` | One filtered spell-check run — the filters that keep it usable. |
 | `Core\TextScan.cs` | Code spans, paths, identifier-shaped words, word tokens. Shared by both features. |
@@ -347,6 +418,7 @@ reaching for a `TopLevel`.
 | `ViewModels\MainWindowViewModel.cs` | Tree, session, editor, copy/queue, countdown, reset handling. |
 | `Views\MainWindow.axaml` | The three panes, prompt cards, queue, keybindings, the tree's context menu. |
 | `Views\TextPrompt.axaml` | The one-line input dialog — Avalonia has none — used to name and rename files. |
+| `Views\SettingsDialog.axaml` | The settings worth a control, over a clone of `Settings`. See below. |
 
 Editing writes back by **splicing the prompt's line range into the original text**, never by
 re-serializing the whole file — that's what keeps every hand-placed separator and blank line intact.
@@ -379,6 +451,29 @@ guesses Legacy and the setting is silently ignored.
 mid-name (`phase.2`) is part of the name rather than an unknown extension to reject.
 `ValidateSessionName` runs before the dialog closes, so bad names are refused in the dialog instead
 of being explained in the status bar afterwards.
+
+## Settings, and the dialog over them
+
+The header's **Settings** split button opens `SettingsDialog`; its dropdown still opens
+`settings.json`, the app-data folder and `claudelog.log`.
+
+- **The dialog edits a `Settings.Clone()` and hands it back on Save**, and `OpenSettings` applies
+  it with one `CopyFrom`. Cancel then has nothing to undo, and the live instance — which the
+  watchers and the view model are all holding — is never seen half-applied.
+- **`CopyFrom` reflects over the type rather than listing the properties.** A setting added later
+  is carried automatically; a hand-written list would silently drop it, and the symptom is a
+  dialog that appears to forget one field. `SelfTest.SettingsCloneAndCopyCarryEveryField` pins the
+  round-trip.
+- **It deliberately doesn't cover the dictionaries or the command-line templates.**
+  `ProjectSources`, `ProjectSessionDirs`, `ProjectShells` and `TerminalArgs*` are maps and format
+  strings that change once; a grid editor for them would be most of the dialog for the least-used
+  part of the file. That is what the dropdown's `settings.json` is for.
+- **Changing `LogRoot` rebuilds the world.** The `TreeWatcher` is bound to the folder it was
+  constructed with and every key in `state.json` is relative to the root, so the watcher is
+  disposed and the tree and word index are rebuilt.
+
+`--startup` constructs the dialog with a real `Settings` as its DataContext, so CI catches a
+compiled binding that stopped resolving as well as XAML that stopped loading.
 
 ## Releases
 

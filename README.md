@@ -51,8 +51,9 @@ The editor is built for getting a prompt down fast and reading it back.
 - **Spell checking** through Windows' own spell checker, filtered hard so it stays quiet: nothing
   inside fences, inline code, URLs or paths; nothing that looks like an identifier
   (`AIMediaSession`, `resetsAt`, `SIP`); and nothing you've used more than a couple of times
-  anywhere in your logs. `Ctrl+Space` on a squiggled word offers corrections and
-  *Add to dictionary*, which adds to the Windows user dictionary the rest of the OS reads.
+  anywhere in your logs. Right-click a squiggled word — or press `Ctrl+Space` in it — for
+  corrections and *Add to dictionary*, which adds to the Windows user dictionary the rest of the
+  OS reads. The right-click menu carries cut/copy/paste/select-all below that, wherever you click.
 
 Run `ClaudeLog --spell <file>` to see exactly what would be flagged in a file, and why the filter
 matters — on a 540-line session it's about a dozen words, most of them real typos.
@@ -74,8 +75,12 @@ puts the selected prompt into it.
   answering a permission dialog.
 - **The conversation outlives the terminal.** ClaudeLog picks the session GUID and passes it to
   `claude --session-id`, then reuses it with `claude --resume`. Close the terminal, close the app,
-  come back next week — the same conversation reopens. **New Claude session** on the button's
-  right-click menu starts a fresh one.
+  come back next week — the same conversation reopens. **Clear Claude session** on the button's
+  right-click menu starts a fresh one next time.
+- **A conversation ClaudeLog didn't start can be adopted.** Sessions from before the app have
+  transcripts under `%USERPROFILE%\.claude\projects\<slugged-directory>\<id>.jsonl`;
+  **Set session id…** on the same menu takes that id and attaches it to the open file, so the next
+  start resumes it. It says whether the transcript for that id and directory actually exists.
 
 ### Where a session runs
 
@@ -101,6 +106,17 @@ delivery goes through the Win32 console, which any terminal that hosts a real co
 
 `{0}` window name, `{1}` tab title, `{2}` working directory, `{3}` the script that reports its PID
 and runs Claude Code.
+
+**The shell inside that tab is PowerShell or Git Bash**, per project:
+
+```jsonc
+"DefaultShell": "GitBash",                          // every project uses Git Bash
+"ProjectShells": { "CallTree": "PowerShell" }        // except this one
+```
+
+Git Bash uses `TerminalArgsGitBash` instead of `TerminalArgs` (same four placeholders), and gets a
+`.sh` launch script instead of a `.ps1` one. Everything downstream — the PID file, sending prompts
+into the console — works the same either way.
 
 ## Prompt separators
 
@@ -181,6 +197,15 @@ Every push builds the release binary and runs it (`--startup`, `--selftest`, `--
 git tag v0.1.0
 git push origin v0.1.0
 ```
+
+## Settings
+
+**Settings** in the header opens a dialog over the settings worth a control: the log root and
+default session directory, the separator new files get, the shell and executables a terminal is
+launched with, the delay before the submitting Enter, and what happens when the limit resets. Its
+dropdown still opens `settings.json` itself, along with the app-data folder and `claudelog.log` —
+the per-project maps (`ProjectSources`, `ProjectSessionDirs`, `ProjectShells`) and the terminal
+command-line templates are edited there.
 
 ## Where things are
 

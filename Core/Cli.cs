@@ -58,6 +58,7 @@ public static class Cli
               ClaudeLog --spell <file>        words the spell checker would flag in a file
               ClaudeLog --terminal            per-session Claude Code sessions and their terminals
                         --start <dir>         open one there and print its session id and pid
+                        --shell gitbash       use Git Bash instead of PowerShell
               ClaudeLog --send <pid> <text>   write one prompt into a terminal's console
               ClaudeLog --selftest            check the parser and the save round-trip
               ClaudeLog --startup             boot the UI without showing it, then exit
@@ -74,6 +75,7 @@ public static class Cli
     {
         var store = StateStore.Load();
         Console.WriteLine($"terminal   {settings.TerminalExe} {settings.TerminalArgs}");
+        Console.WriteLine($"gitbash    {settings.TerminalExe} {settings.TerminalArgsGitBash}");
         Console.WriteLine($"claude     {settings.ClaudeExe}");
         Console.WriteLine($"default    {(settings.DefaultSessionDir.Length == 0 ? "(project source)" : settings.DefaultSessionDir)}");
         Console.WriteLine($"tabs       {Paths.TabsDir}");
@@ -94,16 +96,16 @@ public static class Cli
         {
             var id = file.ClaudeSessionId!;
             var dir = file.SessionDir ?? "";
-            var pid = ClaudeTerminal.Reattach(id, file.TerminalPid);
+            var pid = WinTerminal.Reattach(id, file.TerminalPid);
             var transcript = dir.Length == 0
                 ? null
-                : ClaudeTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, id);
+                : WinTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, id);
 
             Console.WriteLine($"  {key}");
             Console.WriteLine($"    session   {id}");
             Console.WriteLine($"    dir       {(dir.Length == 0 ? "(unset)" : dir)}");
             Console.WriteLine($"    terminal  {(pid is null ? "not running" : $"pid {pid}")}");
-            Console.WriteLine($"    slug      {(dir.Length == 0 ? "-" : ClaudeTerminal.SlugFor(dir))}");
+            Console.WriteLine($"    slug      {(dir.Length == 0 ? "-" : WinTerminal.SlugFor(dir))}");
 
             if (transcript is not null)
             {
@@ -129,20 +131,26 @@ public static class Cli
 
         if (dir is null)
         {
-            Console.Error.WriteLine("usage: ClaudeLog --terminal --start <dir> [session-id]");
+            Console.Error.WriteLine("usage: ClaudeLog --terminal --start <dir> [session-id] [--shell powershell|gitbash]");
             return 1;
         }
 
         dir = Path.GetFullPath(dir);
-        var id = args.Skip(1).FirstOrDefault(a => Guid.TryParse(a, out _)) ?? ClaudeTerminal.NewSessionId();
+        var id = args.Skip(1).FirstOrDefault(a => Guid.TryParse(a, out _)) ?? WinTerminal.NewSessionId();
+        var shell = args.SkipWhile(a => !a.Equals("--shell", StringComparison.OrdinalIgnoreCase))
+            .Skip(1).FirstOrDefault()?.Equals("gitbash", StringComparison.OrdinalIgnoreCase) == true
+            ? TerminalShell.GitBash
+            : TerminalShell.PowerShell;
 
-        var session = ClaudeTerminal.StartAsync(settings, id, dir, "ClaudeLog --terminal").GetAwaiter().GetResult();
+        var session = WinTerminal.StartAsync(settings, id, dir, "ClaudeLog --terminal", shell)
+            .GetAwaiter().GetResult();
 
         Console.WriteLine($"session   {session.SessionId}");
         Console.WriteLine($"dir       {session.Dir}");
+        Console.WriteLine($"shell     {shell}");
         Console.WriteLine($"pid       {session.Pid}");
         Console.WriteLine($"window    {session.WindowName}");
-        Console.WriteLine($"transcript {ClaudeTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, session.SessionId)}");
+        Console.WriteLine($"transcript {WinTerminal.TranscriptPath(settings.ClaudeProjectsDir, dir, session.SessionId)}");
         return 0;
     }
 

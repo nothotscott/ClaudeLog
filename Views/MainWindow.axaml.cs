@@ -47,6 +47,8 @@ public partial class MainWindow : Window
             vm.AskForText = (title, label, initial, select, validate) =>
                 TextPrompt.Show(this, title, label, initial, select, validate);
 
+            vm.EditSettings = settings => SettingsDialog.Show(this, settings);
+
             var editor = this.FindControl<TextEditor>("Editor")!;
             var promptList = this.FindControl<ListBox>("PromptList")!;
 
